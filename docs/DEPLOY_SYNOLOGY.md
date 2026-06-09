@@ -82,7 +82,7 @@ Running two Wine game instances on the stock 2 GB DS225+ is an OOM risk, especia
 
 ```bash
 cd /volume2/Data/App_Development/ra2-lan-party/project
-docker compose --env-file .env up -d --build
+sh scripts/bootstrap-nas.sh launch
 ```
 
 Verify:
@@ -150,25 +150,66 @@ When GuC/HuC are disabled by DSM, containers can see `/dev/dri` and FFmpeg can l
 
 The zero-copy `kmsgrab` examples in the research need a real KMS/DRM display plane. The current game desktop uses `Xvfb`, so those commands are preparation for a future streaming backend rather than a drop-in replacement for noVNC.
 
-## 7. Connect Players
+## 7. Measure And Tune Browser Latency
 
-From client browsers on the LAN:
+The noVNC page includes a **Latency** panel. It opens a dedicated `latency` WebSocket token through the same HTTPS/WSS endpoint as the browser session and displays:
 
-```text
-Player 1: http://192.168.0.193:6081/
-Player 2: http://192.168.0.193:6082/
+- probe RTT between the browser and container
+- min/avg/max RTT over recent samples
+- active noVNC URL settings such as `compression`, `quality`, and `resize`
+
+Use the panel to compare settings after each change. Start with response-time knobs that do not require a rebuild:
+
+```bash
+RESOLUTION=1024x768
+AUDIO_BUFFER_MIN_REMAIN=3
+AUDIO_DRIFT_CHECK_INTERVAL_MS=2000
+AUDIO_DRIFT_MAX_TOLERANCE=0.5
+AUDIO_TARGET_LATENCY=1.0
+AUDIO_MAX_PLAYBACK_RATE_DELTA=0.03
+AUDIO_WEBM_CLUSTER_MS=100
+AUDIO_OPUS_FRAME_MS=20
+AUDIO_QUEUE_BUFFERS=8
 ```
 
-Use the VNC passwords from `.env`.
-
-If the NAS uses the secondary LAN IP, these may also work:
+For the lowest LAN response time, use the panel's `lowest latency` preset or open:
 
 ```text
-Player 1: http://192.168.0.194:6081/
-Player 2: http://192.168.0.194:6082/
+https://192.168.0.193:6081/vnc.html?compression=0&quality=4&resize=remote&autoconnect=1
 ```
 
-## 8. Synology Firewall
+If bandwidth becomes the bottleneck, try the `balanced` preset instead. The hardware encoder work is still useful for a future WebRTC/WebCodecs backend, but it does not reduce noVNC/RFB latency directly because noVNC is not using VA-API video encoding.
+
+## 8. Enable HTTPS (Required for Stable noVNC)
+
+noVNC 1.5+ and browser audio need a secure context. Plain `http://` URLs trigger **"noVNC requires a secure context (TLS). Expect crashes!"** and can break VNC auth and audio.
+
+### Quick path: self-signed TLS on ports 6081/6082
+
+```bash
+cd /volume2/Data/App_Development/ra2-lan-party/project
+sh scripts/generate-tls-certs.sh
+docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
+```
+
+### Alternative: DSM reverse proxy
+
+Use a trusted DSM certificate and proxy `https://MediaServer2.local/ra2-p1` → `http://127.0.0.1:6081` (and `/ra2-p2` → `6082`). See `docs/HTTPS.md`.
+
+## 9. Connect Players
+
+From client browsers on the LAN (use `https://` when TLS is enabled):
+
+```text
+Player 1: https://192.168.0.193:6081/vnc.html
+Player 2: https://192.168.0.193:6082/vnc.html
+```
+
+Use the VNC passwords from `.env`. Trust the self-signed certificate on first visit, or use the DSM reverse-proxy path for a trusted cert.
+
+If the NAS uses the secondary LAN IP, set `NAS_LAN_IP` in `.env` and regenerate TLS if needed.
+
+## 9. Synology Firewall
 
 If DSM firewall is enabled, allow:
 
@@ -177,7 +218,7 @@ If DSM firewall is enabled, allow:
 
 Do not forward `6081` or `6082` from the internet unless you add stronger access controls outside this stack.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 If noVNC opens but the game is missing, inspect assets:
 
@@ -208,7 +249,7 @@ docker exec ra2-player-1 ls -lah /home/commander/.wine/drive_c/RA2/wsock32.dll
 docker exec ra2-player-2 ls -lah /home/commander/.wine/drive_c/RA2/wsock32.dll
 ```
 
-If rendering is slow, reduce `RESOLUTION` to `800x600` in `.env`, update `ddraw.ini`, `RA2.ini`, and `RA2MD.ini` to match, then recreate the containers:
+If rendering is slow or both audio and video stutter, reduce render load before changing transports. The default `ddraw.ini` caps cnc-ddraw at `maxfps=20`. If the NAS is still CPU-bound, reduce `RESOLUTION` to `800x600` in `.env`, update `ddraw.ini`, `RA2.ini`, and `RA2MD.ini` to match, then recreate the containers:
 
 ```bash
 docker compose down

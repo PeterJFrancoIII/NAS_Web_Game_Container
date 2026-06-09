@@ -1,0 +1,17 @@
+# Serve noVNC and browser audio over HTTPS/WSS.
+# Generate certificates first: sh scripts/generate-tls-certs.sh
+# Launch: docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
+
+x-ra2-https: &ra2-https
+  volumes:
+    - ${TLS_DIR:-/volume2/Data/App_Development/ra2-lan-party/tls}:/opt/ra2/tls:ro
+  environment:
+    TLS_CERT: /opt/ra2/tls/cert.pem
+    TLS_KEY: /opt/ra2/tls/key.pem
+
+services:
+  ra2-player-1:
+    <<: *ra2-https
+
+  ra2-player-2:
+    <<: *ra2-https

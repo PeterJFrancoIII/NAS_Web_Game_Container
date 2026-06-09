@@ -54,6 +54,10 @@ if [ "$container_state" != "running" ]; then
 fi
 
 if ! exec_in_container "ls -la /dev/dri && id"; then
+  check_fail "/dev/dri is not mounted in $CONTAINER"
+  printf '\nRecreate players with the transcode overlay:\n'
+  printf '  RA2_COMPOSE_TRANSCODE=1 sh scripts/bootstrap-nas.sh launch\n'
+  printf '  or: docker compose --env-file .env -f compose.yaml -f compose.https.yaml -f compose.transcode.yaml up -d --force-recreate\n'
   print_manual_commands
   exit 1
 fi
@@ -84,9 +88,12 @@ exec_in_container "/usr/bin/ffmpeg -hide_banner -encoders 2>/dev/null | grep -i 
 printf '\n== ffmpeg hwaccels ==\n'
 exec_in_container "/usr/bin/ffmpeg -hide_banner -hwaccels 2>/dev/null || true"
 
+VAAPI_OK=0
+
 printf '\n== h264_vaapi smoke ==\n'
 if exec_in_container "LIBVA_DRIVER_NAME='$LIBVA_DRIVER_NAME' ffmpeg -hide_banner -loglevel error -vaapi_device '$RENDER_NODE' -f lavfi -i testsrc2=size=128x128:rate=1 -vf format=nv12,hwupload -frames:v 1 -c:v h264_vaapi -f null -"; then
   check_pass "h264_vaapi encode smoke test passed"
+  VAAPI_OK=1
 else
   check_fail "h264_vaapi encode smoke test failed"
 fi
@@ -94,6 +101,7 @@ fi
 printf '\n== hevc_vaapi smoke ==\n'
 if exec_in_container "LIBVA_DRIVER_NAME='$LIBVA_DRIVER_NAME' ffmpeg -hide_banner -loglevel error -vaapi_device '$RENDER_NODE' -f lavfi -i testsrc2=size=128x128:rate=1 -vf format=nv12,hwupload -frames:v 1 -c:v hevc_vaapi -f null -"; then
   check_pass "hevc_vaapi encode smoke test passed"
+  VAAPI_OK=1
 else
   check_fail "hevc_vaapi encode smoke test failed"
 fi
@@ -101,6 +109,8 @@ fi
 printf '\n== h264_qsv smoke ==\n'
 if exec_in_container "ffmpeg -hide_banner -loglevel error -init_hw_device qsv=hw,child_device='$RENDER_NODE' -filter_hw_device hw -f lavfi -i testsrc2=size=128x128:rate=1 -frames:v 1 -c:v h264_qsv -f null -"; then
   check_pass "h264_qsv encode smoke test passed"
+elif [ "$VAAPI_OK" -eq 1 ]; then
+  printf '[WARN] h264_qsv encode smoke test failed (VA-API encode is available via i965)\n'
 else
   check_fail "h264_qsv encode smoke test failed"
 fi

@@ -6,7 +6,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 
 PROJECT_ROOT="${PROJECT_ROOT:-/volume2/Data/App_Development/ra2-lan-party}"
 COMPOSE_DIR="${COMPOSE_DIR:-$PROJECT_ROOT/project}"
-COMPOSE_FILES="-f compose.yaml -f compose.transcode.yaml"
+COMPOSE_FILES="-f compose.yaml -f compose.https.yaml -f compose.transcode.yaml"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script needs Synology Docker admin access."

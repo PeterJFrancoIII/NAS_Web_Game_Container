@@ -68,14 +68,38 @@ Optional hardware video-transcoding tooling is available through `compose.transc
 docker compose --env-file .env -f compose.yaml -f compose.transcode.yaml up -d --build
 ```
 
-Connect:
+Connect (HTTPS — required for stable noVNC audio and crypto):
 
-```text
-Player 1: http://192.168.0.193:6081/
-Player 2: http://192.168.0.193:6082/
+```bash
+sh scripts/bootstrap-nas.sh launch   # auto-generates TLS and starts with compose.https.yaml
+# or manually:
+sh scripts/ensure-tls.sh
+docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
 ```
 
-See `docs/DEPLOY_SYNOLOGY.md` for the full deployment guide.
+```text
+Player 1: https://192.168.0.193:6081/vnc.html
+Player 2: https://192.168.0.193:6082/vnc.html
+```
+
+The noVNC page includes a small **Latency** panel. It measures browser-to-container
+round-trip time through the same HTTPS/WSS endpoint and links to quick noVNC presets:
+
+- `lowest latency`: lower compression work for faster response on a LAN
+- `balanced`: moderate compression/quality for noisier links
+
+Tune these in `.env`, recreate the players, then compare the panel:
+
+```bash
+RESOLUTION=1024x768
+AUDIO_BUFFER_MIN_REMAIN=2
+AUDIO_DRIFT_MAX_TOLERANCE=0.25
+AUDIO_WEBM_CLUSTER_MS=50
+AUDIO_OPUS_FRAME_MS=10
+AUDIO_QUEUE_BUFFERS=2
+```
+
+See `docs/HTTPS.md` for TLS options (self-signed or DSM reverse proxy) and `docs/DEPLOY_SYNOLOGY.md` for the full deployment guide.
 
 Verify a live deployment on the NAS:
 
@@ -115,10 +139,26 @@ See `docs/ASSETS_CHECKLIST.md` and `docs/READY.md`.
 ## Tests
 
 ```bash
-sh scripts/run-tests.sh
+sh scripts/run-tests.sh      # unit + contract tests (38+)
+sh scripts/verify-ready.sh   # tests + shell syntax + compose render
 ```
 
-The tests validate each logical layer of the project: Synology paths, environment defaults, Compose topology/static IPs, browser ports, script syntax, runtime startup contract, required asset checks, noVNC display pipeline, game config templates, NAS folder preparation, and deployment documentation.
+Checkpoint layers covered by `tests/`:
+
+| Checkpoint | What it guards |
+|------------|----------------|
+| Environment | `.env` layout, unique serials, browser ports |
+| TLS / HTTPS | cert generation, uid 1000 ownership, compose overlay selection |
+| Compose | static LAN IPs, secrets required, HTTPS/transcode overlays |
+| Container runtime | Wine entrypoint, supervisord pipeline, audio + websockify |
+| NAS automation | bootstrap, preflight, ingest, verify-deployment contracts |
+| Browser endpoint | HTTP vs HTTPS healthcheck, audio proxy handshake |
+
+On the NAS after deploy:
+
+```bash
+sudo sh scripts/verify-deployment.sh
+```
 
 ## Important Files
 

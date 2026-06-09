@@ -44,14 +44,88 @@ for container in "$PLAYER1" "$PLAYER2"; do
   fi
 done
 
-note "noVNC HTTP"
+if [ -f "$ENV_FILE" ]; then
+  note "Player serials"
+  serial1="$(read_env_value PLAYER1_SERIAL "" "$ENV_FILE")"
+  serial2="$(read_env_value PLAYER2_SERIAL "" "$ENV_FILE")"
+  if [ -z "$serial1" ] || [ -z "$serial2" ]; then
+    fail "PLAYER1_SERIAL and PLAYER2_SERIAL must both be set"
+  elif [ "$serial1" = "$serial2" ]; then
+    fail "PLAYER1_SERIAL and PLAYER2_SERIAL must differ"
+  else
+    pass "PLAYER1_SERIAL and PLAYER2_SERIAL differ"
+  fi
+else
+  fail "Environment file not found: $ENV_FILE"
+fi
+
+note "Browser audio stack"
 for container in "$PLAYER1" "$PLAYER2"; do
-  if exec_in "$container" 'python -c "import urllib.request; print(urllib.request.urlopen(\"http://127.0.0.1:6080/\", timeout=5).status)"' | grep -q '^200$'; then
-    pass "$container noVNC returns HTTP 200"
+  if exec_in "$container" 'ps -ef | grep "[p]ulseaudio" >/dev/null'; then
+    pass "$container PulseAudio is running"
+  else
+    fail "$container PulseAudio is not running"
+  fi
+
+  if exec_in "$container" 'ps -ef | grep "[a]udio-proxy" >/dev/null'; then
+    pass "$container audio proxy is running"
+  else
+    fail "$container audio proxy is not running"
+  fi
+
+  if exec_in "$container" 'python -c "import socket; s=socket.create_connection((\"127.0.0.1\", 5711), timeout=2); s.close()"'; then
+    pass "$container audio proxy is listening on port 5711"
+  else
+    fail "$container audio proxy is not listening on port 5711"
+  fi
+done
+
+note "TLS and noVNC browser endpoint"
+if tls_material_present "$ENV_FILE"; then
+  if tls_key_usable_by_container "$ENV_FILE"; then
+    pass "TLS certificate and key are present for container uid 1000"
+  else
+    fail "TLS key is not readable by container uid 1000 — run: sh scripts/ensure-tls.sh"
+  fi
+else
+  fail "TLS is not configured — run: sh scripts/ensure-tls.sh"
+fi
+
+for container in "$PLAYER1" "$PLAYER2"; do
+  if exec_in "$container" '/bin/sh /opt/ra2/healthcheck-novnc.sh'; then
+    if exec_in "$container" 'test -f /opt/ra2/tls/cert.pem && test -f /opt/ra2/tls/key.pem'; then
+      pass "$container noVNC returns HTTPS 200"
+    else
+      pass "$container noVNC returns HTTP 200"
+      printf '[WARN] %s is serving plain HTTP — noVNC requires HTTPS for full functionality (audio, crypto). Run scripts/ensure-tls.sh\n' "$container"
+    fi
   else
     fail "$container noVNC is not reachable on port 6080"
   fi
+
+  audio_ok=0
+  attempt=1
+  while [ "$attempt" -le 3 ]; do
+    if exec_in "$container" 'printf "CD:opus\nSR:44100\n\n" | socat - TCP:127.0.0.1:5711' 2>/dev/null | head -n 1 | grep -q '^READY'; then
+      audio_ok=1
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  if [ "$audio_ok" -eq 1 ]; then
+    pass "$container audio proxy handshake returns READY"
+  else
+    fail "$container audio proxy handshake failed"
+  fi
 done
+
+note "Audio/video sync budget"
+if sh "$SCRIPT_DIR/check-av-sync.sh"; then
+  pass "audio/video sync budget passed"
+else
+  fail "audio/video sync budget failed"
+fi
 
 note "Wine prefix and game process"
 for container in "$PLAYER1" "$PLAYER2"; do
@@ -68,6 +142,14 @@ for container in "$PLAYER1" "$PLAYER2"; do
   fi
 done
 
+note "Host i915 media engine (DS225+/DS425+)"
+if sh "$SCRIPT_DIR/check-host-transcode.sh"; then
+  pass "host i915 media engine is ready"
+else
+  printf '[WARN] host i915 media engine is not ready (Synology default GuC/HuC disabled)\n'
+  printf '       Run: sudo sh scripts/enable-host-transcode.sh\n'
+fi
+
 note "VA-API / FFmpeg transcoding (optional on DS225+)"
 if sh "$SCRIPT_DIR/check-transcode.sh" "$PLAYER1"; then
   pass "hardware transcode probe passed for $PLAYER1"
@@ -82,9 +164,18 @@ fi
 if [ -f "$ENV_FILE" ]; then
   port1="$(read_env_value PLAYER1_HTTP_PORT 6081 "$ENV_FILE")"
   port2="$(read_env_value PLAYER2_HTTP_PORT 6082 "$ENV_FILE")"
+  nas_ip="$(read_env_value NAS_LAN_IP 192.168.0.193 "$ENV_FILE")"
+  tls_dir="$(read_env_value TLS_DIR /volume2/Data/App_Development/ra2-lan-party/tls "$ENV_FILE")"
+  scheme="http"
+  if [ -f "$tls_dir/cert.pem" ] && [ -f "$tls_dir/key.pem" ]; then
+    scheme="https"
+  fi
   printf '\nBrowser URLs:\n'
-  printf '  Player 1: http://192.168.0.193:%s/vnc.html\n' "$port1"
-  printf '  Player 2: http://192.168.0.193:%s/vnc.html\n' "$port2"
+  printf '  Player 1: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port1"
+  printf '  Player 2: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port2"
+  if [ "$scheme" = "http" ]; then
+    printf '\n[WARN] Use HTTPS to avoid noVNC secure-context crashes. See docs/HTTPS.md\n'
+  fi
 fi
 
 if [ "$FAIL" -ne 0 ]; then

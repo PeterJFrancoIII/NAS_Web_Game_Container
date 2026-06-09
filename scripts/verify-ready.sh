@@ -23,8 +23,10 @@ done
 if command -v docker >/dev/null 2>&1; then
   echo
   echo "== Docker Compose render =="
-  docker compose --env-file .env.example config --quiet
+  docker compose --env-file .env.example -f compose.yaml config --quiet
   echo "[OK] compose.yaml renders"
+  docker compose --env-file .env.example -f compose.yaml -f compose.https.yaml config --quiet
+  echo "[OK] compose.yaml + compose.https.yaml render"
 fi
 
 echo

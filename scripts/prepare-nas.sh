@@ -13,6 +13,7 @@ mkdir -p \
   "$PROJECT_ROOT/prefixes/player2" \
   "$PROJECT_ROOT/prefixes/player2/rmcache" \
   "$PROJECT_ROOT/project" \
+  "$PROJECT_ROOT/tls" \
   "$PROJECT_ROOT/logs"
 
 chmod 755 "$PROJECT_ROOT"

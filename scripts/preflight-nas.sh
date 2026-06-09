@@ -107,6 +107,22 @@ else
   note "Python not available for contract tests"
 fi
 
+if [ -f "$COMPOSE_DIR/compose.https.yaml" ]; then
+  ok "HTTPS compose overlay present"
+else
+  note "HTTPS compose overlay missing"
+fi
+
+if tls_material_present "$COMPOSE_DIR/.env"; then
+  if tls_key_usable_by_container "$COMPOSE_DIR/.env"; then
+    ok "TLS certificate ready for container uid 1000"
+  else
+    bad "TLS key exists but is not readable by container uid 1000 — run: sh scripts/ensure-tls.sh"
+  fi
+else
+  note "TLS not generated yet — run: sh scripts/ensure-tls.sh before browser play"
+fi
+
 printf '\nSummary: %s passed, %s warnings, %s failed\n' "$pass" "$warn" "$fail"
 
 if [ "$fail" -gt 0 ]; then

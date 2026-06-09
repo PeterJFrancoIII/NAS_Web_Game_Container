@@ -5,10 +5,13 @@ ARG WEBSOCKIFY_REF=v0.12.0
 ARG WINE_BUILD=10.8
 ARG WINE_VARIANT=amd64-wow64
 
+COPY container/patch-novnc.sh /opt/ra2/patch-novnc.sh
+
 RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
     && pacman -Syu --noconfirm \
     && pacman -S --needed --noconfirm \
       alsa-lib \
+      alsa-plugins \
       alsa-utils \
       ca-certificates \
       curl \
@@ -27,8 +30,11 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
       libva-utils \
       mesa \
       openbox \
+      pulseaudio \
+      pulseaudio-alsa \
       python \
       python-numpy \
+      socat \
       supervisor \
       tar \
       vpl-gpu-rt \
@@ -43,6 +49,8 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
     && git clone --depth 1 --branch "${WEBSOCKIFY_REF}" https://github.com/novnc/websockify.git /opt/novnc/utils/websockify \
     && ln -sf /opt/novnc/vnc.html /opt/novnc/index.html \
     && chmod +x /opt/novnc/utils/websockify/run \
+    && chmod +x /opt/ra2/patch-novnc.sh \
+    && /opt/ra2/patch-novnc.sh /opt/novnc \
     && rm -f /usr/lib/dri/iHD_drv_video.so \
     && pacman -Rns --noconfirm git \
     && pacman -Scc --noconfirm \
@@ -51,10 +59,18 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
     && chown -R commander:commander /opt/ra2 /opt/novnc /opt/wine /home/commander
 
 COPY container/asound.conf /etc/asound.conf
+COPY container/pulse/ /opt/ra2/pulse/
+COPY container/websockify-tokens.cfg /opt/ra2/websockify-tokens.cfg
+COPY --chown=commander:commander container/audio-proxy.sh /opt/ra2/audio-proxy.sh
+COPY --chown=commander:commander container/latency-proxy.sh /opt/ra2/latency-proxy.sh
+COPY --chown=commander:commander container/latency-overlay.js /opt/ra2/latency-overlay.js
+COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
+COPY --chown=commander:commander container/start-websockify.sh /opt/ra2/start-websockify.sh
+COPY --chown=commander:commander container/healthcheck-novnc.sh /opt/ra2/healthcheck-novnc.sh
 COPY --chown=commander:commander container/entrypoint.sh /opt/ra2/entrypoint.sh
 COPY --chown=commander:commander container/supervisord.conf /opt/ra2/supervisord.conf
 
-RUN chmod +x /opt/ra2/entrypoint.sh
+RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/audio-proxy.sh /opt/ra2/latency-proxy.sh /opt/ra2/start-pulseaudio.sh /opt/ra2/start-websockify.sh /opt/ra2/healthcheck-novnc.sh /opt/ra2/patch-novnc.sh
 
 USER commander
 WORKDIR /home/commander

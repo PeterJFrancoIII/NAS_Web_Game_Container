@@ -39,6 +39,8 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
 
         self.assertEqual(values["PLAYER1_HTTP_PORT"], "6081")
         self.assertEqual(values["PLAYER2_HTTP_PORT"], "6082")
+        self.assertEqual(values["NAS_LAN_IP"], "192.168.0.193")
+        self.assertIn("/ra2-lan-party/tls", values["TLS_DIR"])
         self.assertEqual(values["DRI_DEVICE"], "/dev/dri")
         self.assertEqual(values["RENDER_GID"], "937")
         self.assertEqual(values["LIBVA_DRIVER_NAME"], "i965")
@@ -75,6 +77,7 @@ class ComposeTopologyContractTest(unittest.TestCase):
     def test_compose_defines_two_static_game_instances_on_private_bridge(self):
         compose = read("compose.yaml")
 
+        self.assertIn("image: ra2-lan-party:latest", compose)
         self.assertIn("ra2-player-1:", compose)
         self.assertIn("ra2-player-2:", compose)
         self.assertIn("ipv4_address: 172.22.20.11", compose)
@@ -109,6 +112,11 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertNotIn("/home/commander/.wine/drive_c/RA2:ro", compose)
         self.assertNotIn("/rmcache:/home/commander/.wine/drive_c/RA2/rmcache:rw", compose)
         self.assertIn("./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro", compose)
+        self.assertIn("./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro", compose)
+        self.assertIn("./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro", compose)
+        self.assertIn("./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro", compose)
+        self.assertIn("./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro", compose)
+        self.assertIn("./container/asound.conf:/etc/asound.conf:ro", compose)
 
     def test_transcode_overlay_grants_gpu_access_without_changing_default_stack(self):
         compose = read("compose.yaml")
@@ -119,6 +127,41 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertIn("${RENDER_GID:-937}", overlay)
         self.assertIn("${VIDEO_GID:-44}", overlay)
         self.assertIn("LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}", overlay)
+
+    def test_https_overlay_mounts_tls_without_changing_default_stack(self):
+        compose = read("compose.yaml")
+        overlay = read("compose.https.yaml")
+
+        self.assertNotIn("/opt/ra2/tls", compose)
+        self.assertIn("${TLS_DIR:-/volume2/Data/App_Development/ra2-lan-party/tls}:/opt/ra2/tls:ro", overlay)
+        self.assertIn("TLS_CERT: /opt/ra2/tls/cert.pem", overlay)
+        self.assertIn("TLS_KEY: /opt/ra2/tls/key.pem", overlay)
+
+    def test_compose_https_overlay_renders_with_example_environment(self):
+        if not shutil.which("docker"):
+            self.skipTest("docker CLI is not installed")
+
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(PROJECT_ROOT / ".env.example"),
+                "-f",
+                str(PROJECT_ROOT / "compose.yaml"),
+                "-f",
+                str(PROJECT_ROOT / "compose.https.yaml"),
+                "config",
+                "--quiet",
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class RuntimeImageContractTest(unittest.TestCase):
@@ -145,6 +188,9 @@ class RuntimeImageContractTest(unittest.TestCase):
             "libva-utils",
             "vpl-gpu-rt",
             "libmfx",
+            "pulseaudio",
+            "pulseaudio-alsa",
+            "socat",
             "xorg-server-xvfb",
             "openbox",
             "x11vnc",
@@ -153,6 +199,10 @@ class RuntimeImageContractTest(unittest.TestCase):
             "python",
         ]:
             self.assertIn(package, dockerfile)
+        self.assertIn("patch-novnc.sh", dockerfile)
+        self.assertIn("audio-proxy.sh", dockerfile)
+        self.assertIn("start-websockify.sh", dockerfile)
+        self.assertIn("healthcheck-novnc.sh", dockerfile)
         self.assertIn("LIBVA_DRIVER_NAME=i965", dockerfile)
         self.assertIn("rm -f /usr/lib/dri/iHD_drv_video.so", dockerfile)
         self.assertNotIn("intel-media-driver", dockerfile)
@@ -161,9 +211,54 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("COPY container/asound.conf /etc/asound.conf", dockerfile)
         self.assertIn("USER commander", dockerfile)
 
+    def test_asound_routes_alsa_output_to_pulseaudio(self):
+        asound = read("container/asound.conf")
+
+        self.assertIn("type pulse", asound)
+        self.assertNotIn("type null", asound)
+
+    def test_browser_audio_defaults_to_44100_hz_capture(self):
+        pulse = read("container/pulse/default.pa")
+        proxy = read("container/audio-proxy.sh")
+        novnc_patch = read("container/patch-novnc.sh")
+        pulse_launcher = read("container/start-pulseaudio.sh")
+
+        self.assertIn("rate=44100", pulse)
+        self.assertIn("PULSE_SAMPLE_RATE='44100'", proxy)
+        self.assertIn('proxy_cmd="/bin/sh ${SCRIPT} proxy', proxy)
+        self.assertIn("}, '44100', 'Audio sample rate", novnc_patch)
+        self.assertIn("audio_encrypt", novnc_patch)
+        self.assertIn("AUDIO_BUFFER_MIN_REMAIN", novnc_patch)
+        self.assertIn("AUDIO_DRIFT_CHECK_INTERVAL_MS", novnc_patch)
+        self.assertIn("AUDIO_DRIFT_MAX_TOLERANCE", novnc_patch)
+        self.assertIn("latency-overlay.js", novnc_patch)
+        self.assertIn("DRIFT_CHECK_INTERVAL > 0", novnc_patch)
+        self.assertIn("AUDIO_TARGET_LATENCY", novnc_patch)
+        self.assertIn("AUDIO_MAX_PLAYBACK_RATE_DELTA", novnc_patch)
+        self.assertIn("UI.initSetting('compression', 0)", novnc_patch)
+        self.assertIn("targetLatency", novnc_patch)
+        self.assertIn("playbackRate = 1 + correction", novnc_patch)
+        self.assertIn("AUDIO_PLUGIN_REFRESH", novnc_patch)
+        self.assertIn("window.location.protocol === 'https:'", novnc_patch)
+        self.assertIn("AUDIO_WEBM_CLUSTER_MS", proxy)
+        self.assertIn("AUDIO_OPUS_FRAME_MS", proxy)
+        self.assertIn("AUDIO_QUEUE_BUFFERS", proxy)
+        self.assertIn("--file=/opt/ra2/pulse/default.pa", pulse_launcher)
+        self.assertIn("mkdir -p /tmp/pulse", pulse_launcher)
+        self.assertNotIn("--script=", pulse_launcher)
+        self.assertNotIn("rate=48000", pulse)
+
     def test_shell_scripts_have_valid_syntax(self):
         checks = [
             ("bash", "-n", PROJECT_ROOT / "container/entrypoint.sh"),
+            ("bash", "-n", PROJECT_ROOT / "container/start-pulseaudio.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-websockify.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/healthcheck-novnc.sh"),
+            ("bash", "-n", PROJECT_ROOT / "container/patch-novnc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/latency-proxy.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/generate-tls-certs.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/ensure-tls.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/audio-proxy.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/prepare-nas.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/preflight-nas.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/build-image-nas.sh"),
@@ -171,6 +266,9 @@ class RuntimeImageContractTest(unittest.TestCase):
             ("sh", "-n", PROJECT_ROOT / "scripts/bootstrap-nas.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/sync-to-nas.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/check-transcode.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-host-transcode.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/enable-host-transcode.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-av-sync.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/admin-rebuild-check.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/verify-deployment.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/validate-env.sh"),
@@ -227,6 +325,8 @@ class EntrypointContractTest(unittest.TestCase):
         entrypoint = read("container/entrypoint.sh")
         supervisor = read("container/supervisord.conf")
 
+        self.assertIn("Applying noVNC audio/video sync tuning", entrypoint)
+        self.assertIn("/bin/bash /opt/ra2/patch-novnc.sh /opt/novnc", entrypoint)
         self.assertIn("x11vnc -storepasswd \"$VNC_PASSWORD\" /tmp/x11vnc.pass", entrypoint)
         self.assertIn("-rfbauth /tmp/x11vnc.pass", supervisor)
         self.assertNotIn("-passwd %(ENV_VNC_PASSWORD)s", supervisor)
@@ -237,16 +337,30 @@ class DisplayPipelineContractTest(unittest.TestCase):
         supervisor = read("container/supervisord.conf")
 
         for program in [
+            "[program:pulseaudio]",
             "[program:xvfb]",
             "[program:openbox]",
             "[program:x11vnc]",
+            "[program:audio-proxy]",
+            "[program:latency-proxy]",
             "[program:websockify]",
             "[program:game]",
         ]:
             self.assertIn(program, supervisor)
         self.assertIn("Xvfb :1 -screen 0 %(ENV_RESOLUTION)sx16", supervisor)
-        self.assertIn("/opt/novnc/utils/websockify/run 6080 localhost:5900 --web /opt/novnc", supervisor)
+        websockify = read("container/start-websockify.sh")
+        self.assertIn('RUNNER="/opt/novnc/utils/websockify/run"', websockify)
+        self.assertIn('/bin/sh "$RUNNER"', websockify)
+        self.assertIn('--web="$WEB_ROOT"', websockify)
+        self.assertIn('--token-source="$TOKEN_CFG"', websockify)
+        self.assertIn("--token-plugin TokenFile", websockify)
+        self.assertIn("websockify-tokens.cfg", websockify)
+        self.assertIn("/bin/sh /opt/ra2/start-websockify.sh", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/audio-proxy.sh -l 5711", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/latency-proxy.sh -l 5721", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/start-pulseaudio.sh", supervisor)
         self.assertIn("/opt/wine/bin/wine /home/commander/game_assets/%(ENV_GAME_EXE)s -SPEEDCONTROL", supervisor)
+        self.assertIn('PULSE_SERVER="unix:/tmp/pulse/native"', supervisor)
         self.assertIn('WINEDLLOVERRIDES="mscoree=d;mshtml=d;ddraw=n,b;wsock32=n,b"', supervisor)
 
 
@@ -259,7 +373,7 @@ class GameConfigContractTest(unittest.TestCase):
         self.assertIn("fullscreen=false", ddraw)
         self.assertIn("windowed=true", ddraw)
         self.assertIn("renderer=gdi", ddraw)
-        self.assertIn("maxfps=60", ddraw)
+        self.assertIn("maxfps=20", ddraw)
 
     def test_ra2_ini_templates_match_display_resolution_and_lan_defaults(self):
         for ini_name in ["config/RA2.ini", "config/RA2MD.ini"]:
@@ -296,6 +410,7 @@ class NasPreparationContractTest(unittest.TestCase):
                 "prefixes/player1",
                 "prefixes/player2",
                 "project",
+                "tls",
                 "logs",
             ]:
                 self.assertTrue((root / relative).is_dir(), relative)
@@ -315,6 +430,7 @@ class AutomationScriptsContractTest(unittest.TestCase):
             "scripts/bootstrap-nas.sh",
             "scripts/validate-env.sh",
             "scripts/verify-ready.sh",
+            "scripts/check-av-sync.sh",
             "docs/READY.md",
         ]:
             self.assertTrue((PROJECT_ROOT / script).is_file(), script)
@@ -330,6 +446,40 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("check_not_default PLAYER2_VNC_PASSWORD change-player2", validator)
         self.assertIn("check_not_default PLAYER1_SERIAL 11112222333344445555", validator)
         self.assertIn("check_not_default PLAYER2_SERIAL 55554444333322221111", validator)
+        self.assertIn('serial1="$(read_env_value PLAYER1_SERIAL "")"', validator)
+        self.assertIn('elif [ "$serial1" = "$serial2" ]; then', validator)
+
+    def test_verify_deployment_checks_serial_uniqueness(self):
+        verifier = read("scripts/verify-deployment.sh")
+        self.assertIn('serial1="$(read_env_value PLAYER1_SERIAL "" "$ENV_FILE")"', verifier)
+        self.assertIn('elif [ "$serial1" = "$serial2" ]; then', verifier)
+        self.assertIn("PLAYER1_SERIAL and PLAYER2_SERIAL must differ", verifier)
+
+    def test_verify_deployment_checks_browser_audio_stack(self):
+        verifier = read("scripts/verify-deployment.sh")
+        self.assertIn("Browser audio stack", verifier)
+        self.assertIn("audio proxy is listening on port 5711", verifier)
+        self.assertIn("PulseAudio is running", verifier)
+        self.assertIn("audio proxy is running", verifier)
+
+    def test_verify_deployment_warns_when_https_is_not_enabled(self):
+        verifier = read("scripts/verify-deployment.sh")
+        self.assertIn("healthcheck-novnc.sh", verifier)
+        self.assertIn("docs/HTTPS.md", verifier)
+        self.assertIn('scheme="https"', verifier)
+        self.assertIn("audio proxy handshake returns READY", verifier)
+        self.assertIn("Audio/video sync budget", verifier)
+        self.assertIn("check-av-sync.sh", verifier)
+        self.assertIn("ensure-tls.sh", verifier)
+
+    def test_bootstrap_launch_ensures_tls_and_uses_compose_helper(self):
+        bootstrap = read("scripts/bootstrap-nas.sh")
+        lib = read("scripts/lib.sh")
+        self.assertIn("ensure-tls.sh", bootstrap)
+        self.assertIn("run_compose .env up -d --build", bootstrap)
+        self.assertIn("tls_material_present", lib)
+        self.assertIn("fix_tls_permissions", lib)
+        self.assertIn("compose.https.yaml", lib)
 
     def test_ingest_assets_reads_game_exe_from_env(self):
         ingest = read("scripts/ingest-assets.sh")
@@ -343,10 +493,16 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("--exclude='._*'", sync)
         self.assertIn("--exclude='.env'", sync)
 
+    def test_verify_ready_renders_https_compose_overlay(self):
+        verify_ready = read("scripts/verify-ready.sh")
+        self.assertIn("compose.yaml + compose.https.yaml render", verify_ready)
+        self.assertIn("-f compose.yaml -f compose.https.yaml config", verify_ready)
+
     def test_compose_defines_browser_healthcheck(self):
         compose = read("compose.yaml")
         self.assertIn("healthcheck:", compose)
-        self.assertIn("http://127.0.0.1:6080/", compose)
+        self.assertIn("healthcheck-novnc.sh", compose)
+        self.assertIn("start-websockify.sh", compose)
 
 
 class DocumentationContractTest(unittest.TestCase):
@@ -363,8 +519,11 @@ class DocumentationContractTest(unittest.TestCase):
             "PLAYER1_SERIAL",
             "PLAYER2_SERIAL",
             "172.22.20.0/24",
-            "http://192.168.0.193:6081/",
-            "http://192.168.0.193:6082/",
+            "docs/HTTPS.md",
+            "compose.https.yaml",
+            "https://192.168.0.193:6081/vnc.html",
+            "https://192.168.0.193:6082/vnc.html",
+            "secure context",
             "2 GB DS225+ is an OOM risk",
             "sh scripts/bootstrap-nas.sh prepare",
             "sh scripts/validate-env.sh",
@@ -376,6 +535,8 @@ class DocumentationContractTest(unittest.TestCase):
 
         self.assertIn("No copyrighted game files", readme)
         self.assertIn("docker compose --env-file .env up -d --build", readme)
+        self.assertIn("compose.https.yaml", readme)
+        self.assertIn("docs/HTTPS.md", readme)
         self.assertIn("172.22.20.11", readme)
         self.assertIn("172.22.20.12", readme)
 

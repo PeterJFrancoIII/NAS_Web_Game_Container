@@ -1,6 +1,7 @@
 name: ra2-lan-party
 
 x-ra2-common: &ra2-common
+  image: ra2-lan-party:latest
   build:
     context: .
     dockerfile: container/Dockerfile
@@ -10,7 +11,7 @@ x-ra2-common: &ra2-common
   shm_size: "512m"
   mem_limit: "768m"
   healthcheck:
-    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/')\" || exit 1"]
+    test: ["CMD-SHELL", "/bin/sh /opt/ra2/healthcheck-novnc.sh || exit 1"]
     interval: 30s
     timeout: 10s
     retries: 5
@@ -20,6 +21,16 @@ x-ra2-common: &ra2-common
     RESOLUTION: ${RESOLUTION:-1024x768}
     GAME_EXE: ${GAME_EXE:-RA2MD.exe}
     WINEDEBUG: -all
+    AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
+    AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
+    AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
+    AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
+    AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
+    AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
+    AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
+    AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
+    AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
+    LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
   volumes:
     - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
   networks:
@@ -34,6 +45,16 @@ services:
       RESOLUTION: ${RESOLUTION:-1024x768}
       GAME_EXE: ${GAME_EXE:-RA2MD.exe}
       WINEDEBUG: -all
+      AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
+      AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
+      AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
+      AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
+      AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
+      AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
+      AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
+      AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
+      AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
+      LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
       PLAYER_ID: "1"
       PLAYER_SERIAL: ${PLAYER1_SERIAL:?set PLAYER1_SERIAL in .env}
       VNC_PASSWORD: ${PLAYER1_VNC_PASSWORD:?set PLAYER1_VNC_PASSWORD in .env}
@@ -43,7 +64,17 @@ services:
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1}:/home/commander/.wine:rw
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
+      - ./container/start-pulseaudio.sh:/opt/ra2/start-pulseaudio.sh:ro
+      - ./container/start-websockify.sh:/opt/ra2/start-websockify.sh:ro
+      - ./container/healthcheck-novnc.sh:/opt/ra2/healthcheck-novnc.sh:ro
+      - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
+      - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro
+      - ./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro
+      - ./container/pulse:/opt/ra2/pulse:ro
+      - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
+      - ./container/asound.conf:/etc/asound.conf:ro
     networks:
       ra2_lan:
         ipv4_address: 172.22.20.11
@@ -56,6 +87,16 @@ services:
       RESOLUTION: ${RESOLUTION:-1024x768}
       GAME_EXE: ${GAME_EXE:-RA2MD.exe}
       WINEDEBUG: -all
+      AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
+      AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
+      AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
+      AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
+      AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
+      AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
+      AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
+      AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
+      AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
+      LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
       PLAYER_ID: "2"
       PLAYER_SERIAL: ${PLAYER2_SERIAL:?set PLAYER2_SERIAL in .env}
       VNC_PASSWORD: ${PLAYER2_VNC_PASSWORD:?set PLAYER2_VNC_PASSWORD in .env}
@@ -65,7 +106,17 @@ services:
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2}:/home/commander/.wine:rw
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
+      - ./container/start-pulseaudio.sh:/opt/ra2/start-pulseaudio.sh:ro
+      - ./container/start-websockify.sh:/opt/ra2/start-websockify.sh:ro
+      - ./container/healthcheck-novnc.sh:/opt/ra2/healthcheck-novnc.sh:ro
+      - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
+      - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro
+      - ./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro
+      - ./container/pulse:/opt/ra2/pulse:ro
+      - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
+      - ./container/asound.conf:/etc/asound.conf:ro
     networks:
       ra2_lan:
         ipv4_address: 172.22.20.12

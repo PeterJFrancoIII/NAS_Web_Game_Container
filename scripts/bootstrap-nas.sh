@@ -34,10 +34,11 @@ case "$MODE" in
   launch)
     sh "$SCRIPT_DIR/validate-env.sh"
     sh "$SCRIPT_DIR/ingest-assets.sh"
-    run_docker compose --env-file .env up -d --build
+    sh "$SCRIPT_DIR/ensure-tls.sh"
+    run_compose .env up -d --build
     ;;
   status)
-    run_docker compose --env-file .env ps
+    run_compose .env ps
     ;;
   *)
     echo "Usage: $0 [prepare|build|launch|status]"

@@ -97,7 +97,7 @@ if [ ! -L "$GAME_DIR" ]; then
   ln -s "$ASSETS_DIR" "$GAME_DIR"
 fi
 
-log "Configuring Wine registry for dummy ALSA audio and unique multiplayer serial."
+log "Configuring Wine registry for PulseAudio ALSA output and unique multiplayer serial."
 if wine_prefix_ready; then
   if ! wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\Drivers" /v Audio /t REG_SZ /d alsa /f >/dev/null 2>&1; then
     log "Warning: failed to set Wine audio driver."
@@ -128,6 +128,11 @@ fi
 
 umask 077
 x11vnc -storepasswd "$VNC_PASSWORD" /tmp/x11vnc.pass >/dev/null
+
+if [ -f /opt/ra2/patch-novnc.sh ]; then
+  log "Applying noVNC audio/video sync tuning."
+  /bin/bash /opt/ra2/patch-novnc.sh /opt/novnc
+fi
 
 log "Starting noVNC display stack and ${GAME_EXE}."
 exec supervisord -c /opt/ra2/supervisord.conf
