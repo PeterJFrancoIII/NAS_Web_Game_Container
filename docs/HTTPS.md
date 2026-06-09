@@ -96,3 +96,14 @@ Allow the same TCP ports as before (`6081`, `6082`) for Option A, or HTTPS (`443
 - The remote browser uses `https://peterjfrancoiii2.synology.me:6081/vnc.html` or `:6082`.
 
 Do not expose these ports to the public internet without strong VNC passwords and, ideally, a VPN or DSM reverse proxy with additional access controls.
+
+## WebRTC Remote Play
+
+When `RA2_COMPOSE_WEBRTC=1` and `compose.webrtc.yaml` is enabled:
+
+- The remote-play page is served from the existing noVNC HTTPS port: `https://host:6081/remote.html`.
+- WebRTC signaling and input use separate WSS ports (`6091`/`6092` and `5731`/`5732` by default).
+- Video and audio travel over UDP using the configured port ranges (`62001-62020`, `62021-62040`).
+- noVNC remains available as fallback at `vnc.html` on the same HTTPS port.
+
+Forward the UDP ranges and TCP signaling/input ports on your router for DDNS access. If ICE fails across NAT, add a TURN server in a later phase.

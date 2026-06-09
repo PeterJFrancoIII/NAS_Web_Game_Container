@@ -8,6 +8,7 @@ ARG WINE_VARIANT=amd64-wow64
 COPY container/patch-novnc.sh /opt/ra2/patch-novnc.sh
 COPY container/latency-overlay.js /opt/ra2/latency-overlay.js
 COPY container/cursor-lock.js /opt/ra2/cursor-lock.js
+COPY container/remote/ /opt/ra2/remote/
 
 RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
     && pacman -Syu --noconfirm \
@@ -35,8 +36,11 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
       pulseaudio \
       pulseaudio-alsa \
       python \
+      python-gobject \
+      python-websockets \
       python-numpy \
       socat \
+      xdotool \
       supervisor \
       tar \
       vpl-gpu-rt \
@@ -53,6 +57,8 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
     && chmod +x /opt/novnc/utils/websockify/run \
     && chmod +x /opt/ra2/patch-novnc.sh \
     && /opt/ra2/patch-novnc.sh /opt/novnc \
+    && ln -sf /opt/ra2/remote/remote.html /opt/novnc/remote.html \
+    && ln -sf /opt/ra2/remote/remote-play.js /opt/novnc/remote-play.js \
     && rm -f /usr/lib/dri/iHD_drv_video.so \
     && pacman -Rns --noconfirm git \
     && pacman -Scc --noconfirm \
@@ -70,10 +76,15 @@ COPY --chown=commander:commander container/cursor-lock.js /opt/ra2/cursor-lock.j
 COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
 COPY --chown=commander:commander container/start-websockify.sh /opt/ra2/start-websockify.sh
 COPY --chown=commander:commander container/healthcheck-novnc.sh /opt/ra2/healthcheck-novnc.sh
+COPY --chown=commander:commander container/webrtc-media.py /opt/ra2/webrtc-media.py
+COPY --chown=commander:commander container/input-proxy.py /opt/ra2/input-proxy.py
+COPY --chown=commander:commander container/start-webrtc.sh /opt/ra2/start-webrtc.sh
+COPY --chown=commander:commander container/start-input-proxy.sh /opt/ra2/start-input-proxy.sh
+COPY --chown=commander:commander container/remote/ /opt/ra2/remote/
 COPY --chown=commander:commander container/entrypoint.sh /opt/ra2/entrypoint.sh
 COPY --chown=commander:commander container/supervisord.conf /opt/ra2/supervisord.conf
 
-RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/audio-proxy.sh /opt/ra2/latency-proxy.sh /opt/ra2/start-pulseaudio.sh /opt/ra2/start-websockify.sh /opt/ra2/healthcheck-novnc.sh /opt/ra2/patch-novnc.sh
+RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/audio-proxy.sh /opt/ra2/latency-proxy.sh /opt/ra2/start-pulseaudio.sh /opt/ra2/start-websockify.sh /opt/ra2/healthcheck-novnc.sh /opt/ra2/patch-novnc.sh /opt/ra2/start-webrtc.sh /opt/ra2/start-input-proxy.sh /opt/ra2/webrtc-media.py /opt/ra2/input-proxy.py
 
 USER commander
 WORKDIR /home/commander

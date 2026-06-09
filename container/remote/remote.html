@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RA2 Remote Play</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font: 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0e1218;
+      color: #f4f4f4;
+    }
+    header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+    }
+    #status { color: #9bd3ff; }
+    main { display: grid; place-items: center; padding: 12px; }
+    #remoteVideo {
+      width: min(100vw - 24px, 1024px);
+      background: #000;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+    }
+    .hint { color: #b8c4d0; margin-top: 8px; text-align: center; }
+    a { color: #9bd3ff; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>RA2 Remote Play</strong>
+    <span id="status">connecting…</span>
+    <a id="novncLink" href="../vnc.html">noVNC fallback</a>
+  </header>
+  <main>
+    <div>
+      <video id="remoteVideo" autoplay playsinline controls></video>
+      <div class="hint">Click the video to capture mouse/keyboard. Ctrl+Alt+L also locks pointer when supported.</div>
+    </div>
+  </main>
+  <script src="remote-play.js"></script>
+</body>
+</html>

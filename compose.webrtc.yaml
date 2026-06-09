@@ -1,0 +1,59 @@
+# WebRTC remote-play overlay: UDP media + TCP/WSS signaling and input.
+# Launch: RA2_COMPOSE_WEBRTC=1 docker compose --env-file .env -f compose.yaml -f compose.https.yaml -f compose.webrtc.yaml up -d
+
+x-ra2-webrtc: &ra2-webrtc
+  environment:
+    WEBRTC_ENABLED: "1"
+    WEBRTC_SIGNAL_PORT: "6090"
+    WEBRTC_INPUT_PORT: "5731"
+    STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
+    WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-20}
+    WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-800000}
+    NAS_PUBLIC_HOSTNAME: ${NAS_PUBLIC_HOSTNAME:-}
+
+services:
+  ra2-player-1:
+    <<: *ra2-webrtc
+    environment:
+      WEBRTC_ENABLED: "1"
+      WEBRTC_SIGNAL_PORT: "6090"
+      WEBRTC_INPUT_PORT: "5731"
+      WEBRTC_UDP_PORT_MIN: ${PLAYER1_WEBRTC_UDP_MIN:-62001}
+      WEBRTC_UDP_PORT_MAX: ${PLAYER1_WEBRTC_UDP_MAX:-62020}
+      STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
+      WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-20}
+      WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-800000}
+      NAS_PUBLIC_HOSTNAME: ${NAS_PUBLIC_HOSTNAME:-}
+    ports:
+      - "${PLAYER1_WEBRTC_SIGNAL_PORT:-6091}:6090/tcp"
+      - "${PLAYER1_WEBRTC_INPUT_PORT:-5731}:5731/tcp"
+      - "${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}:${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}/udp"
+    volumes:
+      - ./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro
+      - ./container/input-proxy.py:/opt/ra2/input-proxy.py:ro
+      - ./container/start-webrtc.sh:/opt/ra2/start-webrtc.sh:ro
+      - ./container/start-input-proxy.sh:/opt/ra2/start-input-proxy.sh:ro
+      - ./container/remote:/opt/ra2/remote:ro
+
+  ra2-player-2:
+    <<: *ra2-webrtc
+    environment:
+      WEBRTC_ENABLED: "1"
+      WEBRTC_SIGNAL_PORT: "6090"
+      WEBRTC_INPUT_PORT: "5731"
+      WEBRTC_UDP_PORT_MIN: ${PLAYER2_WEBRTC_UDP_MIN:-62021}
+      WEBRTC_UDP_PORT_MAX: ${PLAYER2_WEBRTC_UDP_MAX:-62040}
+      STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
+      WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-20}
+      WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-800000}
+      NAS_PUBLIC_HOSTNAME: ${NAS_PUBLIC_HOSTNAME:-}
+    ports:
+      - "${PLAYER2_WEBRTC_SIGNAL_PORT:-6092}:6090/tcp"
+      - "${PLAYER2_WEBRTC_INPUT_PORT:-5732}:5731/tcp"
+      - "${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}:${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}/udp"
+    volumes:
+      - ./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro
+      - ./container/input-proxy.py:/opt/ra2/input-proxy.py:ro
+      - ./container/start-webrtc.sh:/opt/ra2/start-webrtc.sh:ro
+      - ./container/start-input-proxy.sh:/opt/ra2/start-input-proxy.sh:ro
+      - ./container/remote:/opt/ra2/remote:ro

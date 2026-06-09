@@ -195,6 +195,43 @@ class TlsCheckpointUnitTest(unittest.TestCase):
                 docker_log.read_text(encoding="utf-8"),
             )
 
+    def test_run_compose_adds_webrtc_overlay_when_enabled(self):
+        with temp_workspace() as temp_dir:
+            root = Path(temp_dir)
+            env_file = root / ".env"
+            env_file.write_text("", encoding="utf-8")
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            (root / "compose.webrtc.yaml").write_text("services: {}\n", encoding="utf-8")
+
+            fake_docker = root / "docker"
+            docker_log = root / "docker.args"
+            write_executable(
+                fake_docker,
+                f"""
+                #!/bin/sh
+                echo "$@" >> "{docker_log}"
+                if [ "$1" = info ]; then exit 0; fi
+                exit 0
+                """,
+            )
+
+            result = run_script(
+                f'. "{PROJECT_ROOT / "scripts/lib.sh"}"; run_compose "{env_file}" up -d',
+                cwd=root,
+                env={"DOCKER": str(fake_docker), "RA2_COMPOSE_WEBRTC": "1"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("compose.webrtc.yaml", docker_log.read_text(encoding="utf-8"))
+
+            docker_log.write_text("", encoding="utf-8")
+            result_opt_out = run_script(
+                f'. "{PROJECT_ROOT / "scripts/lib.sh"}"; run_compose "{env_file}" ps',
+                cwd=root,
+                env={"DOCKER": str(fake_docker), "RA2_COMPOSE_WEBRTC": "0"},
+            )
+            self.assertEqual(result_opt_out.returncode, 0, result_opt_out.stderr)
+            self.assertNotIn("compose.webrtc.yaml", docker_log.read_text(encoding="utf-8"))
+
 
 class TlsEnsureCheckpointUnitTest(unittest.TestCase):
     def test_generate_tls_certs_is_idempotent_when_material_exists(self):

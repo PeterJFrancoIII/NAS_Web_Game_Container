@@ -39,6 +39,10 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
 
         self.assertEqual(values["PLAYER1_HTTP_PORT"], "6081")
         self.assertEqual(values["PLAYER2_HTTP_PORT"], "6082")
+        self.assertEqual(values["PLAYER1_WEBRTC_SIGNAL_PORT"], "6091")
+        self.assertEqual(values["PLAYER2_WEBRTC_SIGNAL_PORT"], "6092")
+        self.assertEqual(values["PLAYER1_WEBRTC_UDP_MIN"], "62001")
+        self.assertEqual(values["PLAYER2_WEBRTC_UDP_MAX"], "62040")
         self.assertEqual(values["NAS_LAN_IP"], "192.168.0.193")
         self.assertEqual(values["NAS_PUBLIC_HOSTNAME"], "peterjfrancoiii2.synology.me")
         self.assertIn("/ra2-lan-party/tls", values["TLS_DIR"])
@@ -139,6 +143,46 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertIn("TLS_CERT: /opt/ra2/tls/cert.pem", overlay)
         self.assertIn("TLS_KEY: /opt/ra2/tls/key.pem", overlay)
 
+    def test_webrtc_overlay_adds_udp_and_signaling_ports_without_changing_default_stack(self):
+        compose = read("compose.yaml")
+        overlay = read("compose.webrtc.yaml")
+
+        self.assertNotIn("WEBRTC_ENABLED", compose)
+        self.assertNotIn("compose.webrtc.yaml", compose)
+        self.assertIn("WEBRTC_ENABLED: \"1\"", overlay)
+        self.assertIn("${PLAYER1_WEBRTC_SIGNAL_PORT:-6091}:6090/tcp", overlay)
+        self.assertIn("${PLAYER2_WEBRTC_SIGNAL_PORT:-6092}:6090/tcp", overlay)
+        self.assertIn("${PLAYER1_WEBRTC_INPUT_PORT:-5731}:5731/tcp", overlay)
+        self.assertIn("${PLAYER2_WEBRTC_INPUT_PORT:-5732}:5731/tcp", overlay)
+        self.assertIn("/udp", overlay)
+        self.assertIn("./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro", overlay)
+
+    def test_compose_webrtc_overlay_renders_with_example_environment(self):
+        if not shutil.which("docker"):
+            self.skipTest("docker CLI is not installed")
+
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(PROJECT_ROOT / ".env.example"),
+                "-f",
+                str(PROJECT_ROOT / "compose.yaml"),
+                "-f",
+                str(PROJECT_ROOT / "compose.webrtc.yaml"),
+                "config",
+                "--quiet",
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_compose_https_overlay_renders_with_example_environment(self):
         if not shutil.which("docker"):
             self.skipTest("docker CLI is not installed")
@@ -212,6 +256,10 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("useradd -m -u 1000 -s /bin/bash commander", dockerfile)
         self.assertIn("COPY container/asound.conf /etc/asound.conf", dockerfile)
         self.assertIn("COPY container/cursor-lock.js /opt/ra2/cursor-lock.js", dockerfile)
+        self.assertIn("webrtc-media.py", dockerfile)
+        self.assertIn("input-proxy.py", dockerfile)
+        self.assertIn("python-websockets", dockerfile)
+        self.assertIn("xdotool", dockerfile)
         self.assertIn("USER commander", dockerfile)
 
     def test_asound_routes_alsa_output_to_pulseaudio(self):
@@ -263,6 +311,19 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("movementX", cursor_lock)
         self.assertIn("dispatchSyntheticEvent", cursor_lock)
 
+    def test_webrtc_remote_play_uses_xvfb_pulse_and_wss_signaling(self):
+        webrtc = read("container/webrtc-media.py")
+        input_proxy = read("container/input-proxy.py")
+        remote_js = read("container/remote/remote-play.js")
+
+        self.assertIn("ximagesrc", webrtc)
+        self.assertIn("tcpclientsrc", webrtc)
+        self.assertIn("webrtcbin", webrtc)
+        self.assertIn("WEBRTC_UDP_PORT_MIN", webrtc)
+        self.assertIn("xdotool", input_proxy)
+        self.assertIn("RTCPeerConnection", remote_js)
+        self.assertIn("WebSocket", remote_js)
+
     def test_shell_scripts_have_valid_syntax(self):
         checks = [
             ("bash", "-n", PROJECT_ROOT / "container/entrypoint.sh"),
@@ -285,6 +346,9 @@ class RuntimeImageContractTest(unittest.TestCase):
             ("sh", "-n", PROJECT_ROOT / "scripts/enable-host-transcode.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/check-av-sync.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/apply-serial-fix.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-webrtc-ready.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-webrtc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-input-proxy.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/admin-rebuild-check.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/verify-deployment.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/validate-env.sh"),
@@ -346,6 +410,7 @@ class EntrypointContractTest(unittest.TestCase):
 
         self.assertIn("Applying noVNC audio/video sync tuning", entrypoint)
         self.assertIn("/bin/bash /opt/ra2/patch-novnc.sh /opt/novnc", entrypoint)
+        self.assertIn("remote.html", entrypoint)
         self.assertIn("x11vnc -storepasswd \"$VNC_PASSWORD\" /tmp/x11vnc.pass", entrypoint)
         self.assertIn("-rfbauth /tmp/x11vnc.pass", supervisor)
         self.assertNotIn("-passwd %(ENV_VNC_PASSWORD)s", supervisor)
@@ -363,9 +428,13 @@ class DisplayPipelineContractTest(unittest.TestCase):
             "[program:audio-proxy]",
             "[program:latency-proxy]",
             "[program:websockify]",
+            "[program:webrtc-media]",
+            "[program:webrtc-input]",
             "[program:game]",
         ]:
             self.assertIn(program, supervisor)
+        self.assertIn("/bin/sh /opt/ra2/start-webrtc.sh", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/start-input-proxy.sh", supervisor)
         self.assertIn("Xvfb :1 -screen 0 %(ENV_RESOLUTION)sx16", supervisor)
         websockify = read("container/start-websockify.sh")
         self.assertIn('RUNNER="/opt/novnc/utils/websockify/run"', websockify)
@@ -450,7 +519,9 @@ class AutomationScriptsContractTest(unittest.TestCase):
             "scripts/validate-env.sh",
             "scripts/verify-ready.sh",
             "scripts/check-av-sync.sh",
+            "scripts/check-webrtc-ready.sh",
             "scripts/apply-serial-fix.sh",
+            "compose.webrtc.yaml",
             "docs/READY.md",
         ]:
             self.assertTrue((PROJECT_ROOT / script).is_file(), script)
@@ -493,6 +564,14 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("Audio/video sync budget", verifier)
         self.assertIn("check-av-sync.sh", verifier)
         self.assertIn("ensure-tls.sh", verifier)
+        self.assertIn("check-webrtc-ready.sh", verifier)
+        self.assertIn("WebRTC remote play URLs", verifier)
+
+    def test_lib_sh_supports_opt_in_webrtc_overlay(self):
+        lib = read("scripts/lib.sh")
+        self.assertIn("webrtc_overlay_enabled", lib)
+        self.assertIn("compose.webrtc.yaml", lib)
+        self.assertIn("RA2_COMPOSE_WEBRTC", lib)
 
     def test_bootstrap_launch_ensures_tls_and_uses_compose_helper(self):
         bootstrap = read("scripts/bootstrap-nas.sh")
@@ -557,6 +636,9 @@ class DocumentationContractTest(unittest.TestCase):
             "https://peterjfrancoiii2.synology.me:6082/vnc.html",
             "external TCP `6081`",
             "external TCP `6082`",
+            "RA2_COMPOSE_WEBRTC=1",
+            "remote.html?signal=6091&input=5731",
+            "UDP `62001-62020`",
             "secure context",
             "2 GB DS225+ is an OOM risk",
             "sh scripts/bootstrap-nas.sh prepare",

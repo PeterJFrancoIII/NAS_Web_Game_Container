@@ -111,29 +111,34 @@ compose_file_args() {
   if [ "$extra" = "transcode" ]; then
     printf '%s\n' "-f" "compose.transcode.yaml"
   fi
+  if [ "$extra" = "webrtc" ]; then
+    printf '%s\n' "-f" "compose.webrtc.yaml"
+  fi
 }
 
 transcode_overlay_enabled() {
   [ "${RA2_COMPOSE_TRANSCODE:-1}" != "0" ] && [ -f compose.transcode.yaml ]
 }
 
+webrtc_overlay_enabled() {
+  [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ] && [ -f compose.webrtc.yaml ]
+}
+
 run_compose() {
   env_file="${1:-.env}"
   shift
 
+  compose_args="-f compose.yaml"
   if tls_material_present "$env_file"; then
-    if transcode_overlay_enabled; then
-      run_docker compose --env-file "$env_file" -f compose.yaml -f compose.https.yaml -f compose.transcode.yaml "$@"
-      return $?
-    fi
-    run_docker compose --env-file "$env_file" -f compose.yaml -f compose.https.yaml "$@"
-    return $?
+    compose_args="$compose_args -f compose.https.yaml"
   fi
-
   if transcode_overlay_enabled; then
-    run_docker compose --env-file "$env_file" -f compose.yaml -f compose.transcode.yaml "$@"
-    return $?
+    compose_args="$compose_args -f compose.transcode.yaml"
+  fi
+  if webrtc_overlay_enabled; then
+    compose_args="$compose_args -f compose.webrtc.yaml"
   fi
 
-  run_docker compose --env-file "$env_file" -f compose.yaml "$@"
+  # shellcheck disable=SC2086
+  run_docker compose --env-file "$env_file" $compose_args "$@"
 }

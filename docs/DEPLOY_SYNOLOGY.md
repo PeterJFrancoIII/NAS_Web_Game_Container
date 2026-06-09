@@ -219,12 +219,46 @@ Use the VNC passwords from `.env`. Trust the self-signed certificate on first vi
 
 If the NAS uses the secondary LAN IP, set `NAS_LAN_IP` in `.env` and regenerate TLS if needed.
 
+### WebRTC remote play (UDP media, TCP/WSS control)
+
+Enable the opt-in overlay when you want lower-latency remote play over the internet:
+
+```bash
+cd /volume2/Data/App_Development/ra2-lan-party/project
+RA2_COMPOSE_WEBRTC=1 sh -c '. ./scripts/lib.sh; run_compose .env up -d --build'
+```
+
+Remote browser URLs (page served from noVNC port, signaling/input on dedicated ports):
+
+```text
+Player 1: https://peterjfrancoiii2.synology.me:6081/remote.html?signal=6091&input=5731
+Player 2: https://peterjfrancoiii2.synology.me:6082/remote.html?signal=6092&input=5732
+```
+
+Router/DSM forwards for WebRTC:
+
+- TCP `6091` → NAS `6091` (player 1 signaling)
+- TCP `6092` → NAS `6092` (player 2 signaling)
+- TCP `5731` → NAS `5731` (player 1 input)
+- TCP `5732` → NAS `5732` (player 2 input)
+- UDP `62001-62020` → NAS `62001-62020` (player 1 media)
+- UDP `62021-62040` → NAS `62021-62040` (player 2 media)
+
+noVNC remains available as fallback on the same `6081`/`6082` ports.
+
+Verify:
+
+```bash
+RA2_COMPOSE_WEBRTC=1 sudo sh scripts/verify-deployment.sh
+```
+
 ## 9. Synology Firewall
 
 If DSM firewall is enabled, allow:
 
 - Browser access from your LAN to TCP `6081` and `6082` on the NAS.
 - Remote browser access from the internet to TCP `6081` and `6082` only if those router forwards are intentional.
+- WebRTC remote play: TCP `6091`/`6092`, TCP `5731`/`5732`, and UDP `62001-62020` / `62021-62040` when `RA2_COMPOSE_WEBRTC=1`.
 - Container subnet `172.22.20.0/24` so the two game instances can exchange UDP LAN discovery/game traffic.
 
 Do not forward `6081` or `6082` from the internet unless you add stronger access controls outside this stack.

@@ -141,5 +141,10 @@ if [ -f /opt/ra2/patch-novnc.sh ]; then
   /bin/bash /opt/ra2/patch-novnc.sh /opt/novnc
 fi
 
+if [ -f /opt/ra2/remote/remote.html ]; then
+  ln -sf /opt/ra2/remote/remote.html /opt/novnc/remote.html
+  ln -sf /opt/ra2/remote/remote-play.js /opt/novnc/remote-play.js
+fi
+
 log "Starting noVNC display stack and ${GAME_EXE}."
 exec supervisord -c /opt/ra2/supervisord.conf

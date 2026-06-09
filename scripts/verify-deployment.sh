@@ -127,6 +127,15 @@ else
   fail "audio/video sync budget failed"
 fi
 
+if [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ]; then
+  note "WebRTC remote play"
+  if sh "$SCRIPT_DIR/check-webrtc-ready.sh"; then
+    pass "WebRTC readiness passed"
+  else
+    fail "WebRTC readiness failed"
+  fi
+fi
+
 note "Wine prefix and game process"
 for container in "$PLAYER1" "$PLAYER2"; do
   if exec_in "$container" 'test -f /home/commander/.wine/drive_c/windows/system32/kernel32.dll && test -f /home/commander/.wine/drive_c/windows/syswow64/kernel32.dll'; then
@@ -177,6 +186,24 @@ if [ -f "$ENV_FILE" ]; then
   if [ -n "$public_host" ]; then
     printf '  Player 1 remote: %s://%s:%s/vnc.html\n' "$scheme" "$public_host" "$port1"
     printf '  Player 2 remote: %s://%s:%s/vnc.html\n' "$scheme" "$public_host" "$port2"
+  fi
+  if [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ]; then
+    signal1="$(read_env_value PLAYER1_WEBRTC_SIGNAL_PORT 6091 "$ENV_FILE")"
+    signal2="$(read_env_value PLAYER2_WEBRTC_SIGNAL_PORT 6092 "$ENV_FILE")"
+    input1="$(read_env_value PLAYER1_WEBRTC_INPUT_PORT 5731 "$ENV_FILE")"
+    input2="$(read_env_value PLAYER2_WEBRTC_INPUT_PORT 5732 "$ENV_FILE")"
+    udp1_min="$(read_env_value PLAYER1_WEBRTC_UDP_MIN 62001 "$ENV_FILE")"
+    udp1_max="$(read_env_value PLAYER1_WEBRTC_UDP_MAX 62020 "$ENV_FILE")"
+    udp2_min="$(read_env_value PLAYER2_WEBRTC_UDP_MIN 62021 "$ENV_FILE")"
+    udp2_max="$(read_env_value PLAYER2_WEBRTC_UDP_MAX 62040 "$ENV_FILE")"
+    host="$nas_ip"
+    if [ -n "$public_host" ]; then
+      host="$public_host"
+    fi
+    printf '\nWebRTC remote play URLs:\n'
+    printf '  Player 1: %s://%s:%s/remote.html?signal=%s&input=%s\n' "$scheme" "$host" "$port1" "$signal1" "$input1"
+    printf '  Player 2: %s://%s:%s/remote.html?signal=%s&input=%s\n' "$scheme" "$host" "$port2" "$signal2" "$input2"
+    printf '  UDP forwards: %s-%s (player 1), %s-%s (player 2)\n' "$udp1_min" "$udp1_max" "$udp2_min" "$udp2_max"
   fi
   if [ "$scheme" = "http" ]; then
     printf '\n[WARN] Use HTTPS to avoid noVNC secure-context crashes. See docs/HTTPS.md\n'
