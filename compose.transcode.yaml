@@ -1,0 +1,16 @@
+x-ra2-transcode: &ra2-transcode
+  devices:
+    - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+  group_add:
+    - "${RENDER_GID:-937}"
+    - "${VIDEO_GID:-44}"
+  environment:
+    LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}
+    GST_VAAPI_ALL_DRIVERS: "1"
+
+services:
+  ra2-player-1:
+    <<: *ra2-transcode
+
+  ra2-player-2:
+    <<: *ra2-transcode

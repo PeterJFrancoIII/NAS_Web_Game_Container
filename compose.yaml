@@ -1,0 +1,80 @@
+name: ra2-lan-party
+
+x-ra2-common: &ra2-common
+  build:
+    context: .
+    dockerfile: container/Dockerfile
+  restart: unless-stopped
+  security_opt:
+    - seccomp:unconfined
+  shm_size: "512m"
+  mem_limit: "768m"
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/')\" || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 300s
+  environment:
+    TZ: ${TZ:-America/New_York}
+    RESOLUTION: ${RESOLUTION:-1024x768}
+    GAME_EXE: ${GAME_EXE:-RA2MD.exe}
+    WINEDEBUG: -all
+  volumes:
+    - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
+  networks:
+    ra2_lan: {}
+
+services:
+  ra2-player-1:
+    <<: *ra2-common
+    container_name: ra2-player-1
+    environment:
+      TZ: ${TZ:-America/New_York}
+      RESOLUTION: ${RESOLUTION:-1024x768}
+      GAME_EXE: ${GAME_EXE:-RA2MD.exe}
+      WINEDEBUG: -all
+      PLAYER_ID: "1"
+      PLAYER_SERIAL: ${PLAYER1_SERIAL:?set PLAYER1_SERIAL in .env}
+      VNC_PASSWORD: ${PLAYER1_VNC_PASSWORD:?set PLAYER1_VNC_PASSWORD in .env}
+    ports:
+      - "${PLAYER1_HTTP_PORT:-6081}:6080/tcp"
+    volumes:
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
+      - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1}:/home/commander/.wine:rw
+      - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
+    networks:
+      ra2_lan:
+        ipv4_address: 172.22.20.11
+
+  ra2-player-2:
+    <<: *ra2-common
+    container_name: ra2-player-2
+    environment:
+      TZ: ${TZ:-America/New_York}
+      RESOLUTION: ${RESOLUTION:-1024x768}
+      GAME_EXE: ${GAME_EXE:-RA2MD.exe}
+      WINEDEBUG: -all
+      PLAYER_ID: "2"
+      PLAYER_SERIAL: ${PLAYER2_SERIAL:?set PLAYER2_SERIAL in .env}
+      VNC_PASSWORD: ${PLAYER2_VNC_PASSWORD:?set PLAYER2_VNC_PASSWORD in .env}
+    ports:
+      - "${PLAYER2_HTTP_PORT:-6082}:6080/tcp"
+    volumes:
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
+      - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2}:/home/commander/.wine:rw
+      - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
+    networks:
+      ra2_lan:
+        ipv4_address: 172.22.20.12
+
+networks:
+  ra2_lan:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.22.20.0/24
+          gateway: 172.22.20.1
