@@ -39,8 +39,10 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
 
         self.assertEqual(values["PLAYER1_HTTP_PORT"], "6081")
         self.assertEqual(values["PLAYER2_HTTP_PORT"], "6082")
-        self.assertEqual(values["PLAYER1_WEBRTC_SIGNAL_PORT"], "6091")
-        self.assertEqual(values["PLAYER2_WEBRTC_SIGNAL_PORT"], "6092")
+        self.assertEqual(values["PLAYER1_WEBRTC_SIGNAL_PORT"], "6083")
+        self.assertEqual(values["PLAYER2_WEBRTC_SIGNAL_PORT"], "6084")
+        self.assertEqual(values["PLAYER1_WEBRTC_INPUT_PORT"], "6085")
+        self.assertEqual(values["PLAYER2_WEBRTC_INPUT_PORT"], "6086")
         self.assertEqual(values["PLAYER1_WEBRTC_UDP_MIN"], "62001")
         self.assertEqual(values["PLAYER2_WEBRTC_UDP_MAX"], "62040")
         self.assertEqual(values["NAS_LAN_IP"], "192.168.0.193")
@@ -150,10 +152,10 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertNotIn("WEBRTC_ENABLED", compose)
         self.assertNotIn("compose.webrtc.yaml", compose)
         self.assertIn("WEBRTC_ENABLED: \"1\"", overlay)
-        self.assertIn("${PLAYER1_WEBRTC_SIGNAL_PORT:-6091}:6090/tcp", overlay)
-        self.assertIn("${PLAYER2_WEBRTC_SIGNAL_PORT:-6092}:6090/tcp", overlay)
-        self.assertIn("${PLAYER1_WEBRTC_INPUT_PORT:-5731}:5731/tcp", overlay)
-        self.assertIn("${PLAYER2_WEBRTC_INPUT_PORT:-5732}:5731/tcp", overlay)
+        self.assertIn("${PLAYER1_WEBRTC_SIGNAL_PORT:-6083}:6090/tcp", overlay)
+        self.assertIn("${PLAYER2_WEBRTC_SIGNAL_PORT:-6084}:6090/tcp", overlay)
+        self.assertIn("${PLAYER1_WEBRTC_INPUT_PORT:-6085}:5731/tcp", overlay)
+        self.assertIn("${PLAYER2_WEBRTC_INPUT_PORT:-6086}:5731/tcp", overlay)
         self.assertIn("/udp", overlay)
         self.assertIn("./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro", overlay)
 
@@ -637,8 +639,9 @@ class DocumentationContractTest(unittest.TestCase):
             "external TCP `6081`",
             "external TCP `6082`",
             "RA2_COMPOSE_WEBRTC=1",
-            "remote.html?signal=6091&input=5731",
-            "UDP `62001-62020`",
+            "remote.html?signal=6083&input=6085",
+            "TCP `6081-6086`",
+            "UDP `62001-62040`",
             "secure context",
             "2 GB DS225+ is an OOM risk",
             "sh scripts/bootstrap-nas.sh prepare",

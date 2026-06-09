@@ -188,10 +188,10 @@ if [ -f "$ENV_FILE" ]; then
     printf '  Player 2 remote: %s://%s:%s/vnc.html\n' "$scheme" "$public_host" "$port2"
   fi
   if [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ]; then
-    signal1="$(read_env_value PLAYER1_WEBRTC_SIGNAL_PORT 6091 "$ENV_FILE")"
-    signal2="$(read_env_value PLAYER2_WEBRTC_SIGNAL_PORT 6092 "$ENV_FILE")"
-    input1="$(read_env_value PLAYER1_WEBRTC_INPUT_PORT 5731 "$ENV_FILE")"
-    input2="$(read_env_value PLAYER2_WEBRTC_INPUT_PORT 5732 "$ENV_FILE")"
+    signal1="$(read_env_value PLAYER1_WEBRTC_SIGNAL_PORT 6083 "$ENV_FILE")"
+    signal2="$(read_env_value PLAYER2_WEBRTC_SIGNAL_PORT 6084 "$ENV_FILE")"
+    input1="$(read_env_value PLAYER1_WEBRTC_INPUT_PORT 6085 "$ENV_FILE")"
+    input2="$(read_env_value PLAYER2_WEBRTC_INPUT_PORT 6086 "$ENV_FILE")"
     udp1_min="$(read_env_value PLAYER1_WEBRTC_UDP_MIN 62001 "$ENV_FILE")"
     udp1_max="$(read_env_value PLAYER1_WEBRTC_UDP_MAX 62020 "$ENV_FILE")"
     udp2_min="$(read_env_value PLAYER2_WEBRTC_UDP_MIN 62021 "$ENV_FILE")"

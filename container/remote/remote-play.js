@@ -1,7 +1,7 @@
 (() => {
   const params = new URLSearchParams(window.location.search);
-  const signalPort = params.get("signal") || params.get("signal_port") || "6091";
-  const inputPort = params.get("input") || params.get("input_port") || "5731";
+  const signalPort = params.get("signal") || params.get("signal_port") || "6083";
+  const inputPort = params.get("input") || params.get("input_port") || "6085";
   const host = window.location.hostname;
   const secure = window.location.protocol === "https:";
   const wsScheme = secure ? "wss" : "ws";

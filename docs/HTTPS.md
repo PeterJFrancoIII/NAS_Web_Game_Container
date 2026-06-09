@@ -102,8 +102,8 @@ Do not expose these ports to the public internet without strong VNC passwords an
 When `RA2_COMPOSE_WEBRTC=1` and `compose.webrtc.yaml` is enabled:
 
 - The remote-play page is served from the existing noVNC HTTPS port: `https://host:6081/remote.html`.
-- WebRTC signaling and input use separate WSS ports (`6091`/`6092` and `5731`/`5732` by default).
-- Video and audio travel over UDP using the configured port ranges (`62001-62020`, `62021-62040`).
+- WebRTC signaling and input use the same grouped TCP block as noVNC (`6081-6086` by default).
+- Video and audio travel over the grouped UDP media block (`62001-62040` by default).
 - noVNC remains available as fallback at `vnc.html` on the same HTTPS port.
 
 Forward the UDP ranges and TCP signaling/input ports on your router for DDNS access. If ICE fails across NAT, add a TURN server in a later phase.
