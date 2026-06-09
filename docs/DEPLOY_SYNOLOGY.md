@@ -192,6 +192,14 @@ sh scripts/generate-tls-certs.sh
 docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
 ```
 
+For remote browser access through Synology DDNS, set:
+
+```text
+NAS_PUBLIC_HOSTNAME=peterjfrancoiii2.synology.me
+```
+
+Then forward external TCP `6081` to NAS `192.168.0.193:6081` and external TCP `6082` to NAS `192.168.0.193:6082`. If TLS certs already existed before adding the DDNS hostname, delete `cert.pem` and `key.pem` under `TLS_DIR` and rerun `sh scripts/generate-tls-certs.sh` so the certificate includes the public hostname.
+
 ### Alternative: DSM reverse proxy
 
 Use a trusted DSM certificate and proxy `https://MediaServer2.local/ra2-p1` → `http://127.0.0.1:6081` (and `/ra2-p2` → `6082`). See `docs/HTTPS.md`.
@@ -201,8 +209,10 @@ Use a trusted DSM certificate and proxy `https://MediaServer2.local/ra2-p1` → 
 From client browsers on the LAN (use `https://` when TLS is enabled):
 
 ```text
-Player 1: https://192.168.0.193:6081/vnc.html
-Player 2: https://192.168.0.193:6082/vnc.html
+Player 1 LAN: https://192.168.0.193:6081/vnc.html
+Player 2 LAN: https://192.168.0.193:6082/vnc.html
+Player 1 remote: https://peterjfrancoiii2.synology.me:6081/vnc.html
+Player 2 remote: https://peterjfrancoiii2.synology.me:6082/vnc.html
 ```
 
 Use the VNC passwords from `.env`. Trust the self-signed certificate on first visit, or use the DSM reverse-proxy path for a trusted cert.
@@ -214,6 +224,7 @@ If the NAS uses the secondary LAN IP, set `NAS_LAN_IP` in `.env` and regenerate 
 If DSM firewall is enabled, allow:
 
 - Browser access from your LAN to TCP `6081` and `6082` on the NAS.
+- Remote browser access from the internet to TCP `6081` and `6082` only if those router forwards are intentional.
 - Container subnet `172.22.20.0/24` so the two game instances can exchange UDP LAN discovery/game traffic.
 
 Do not forward `6081` or `6082` from the internet unless you add stronger access controls outside this stack.

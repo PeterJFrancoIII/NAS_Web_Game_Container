@@ -72,6 +72,7 @@ services:
       - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
       - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro
       - ./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro
+      - ./container/cursor-lock.js:/opt/ra2/cursor-lock.js:ro
       - ./container/pulse:/opt/ra2/pulse:ro
       - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
       - ./container/asound.conf:/etc/asound.conf:ro
@@ -114,6 +115,7 @@ services:
       - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
       - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro
       - ./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro
+      - ./container/cursor-lock.js:/opt/ra2/cursor-lock.js:ro
       - ./container/pulse:/opt/ra2/pulse:ro
       - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
       - ./container/asound.conf:/etc/asound.conf:ro

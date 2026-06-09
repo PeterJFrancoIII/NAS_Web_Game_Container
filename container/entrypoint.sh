@@ -97,17 +97,24 @@ if [ ! -L "$GAME_DIR" ]; then
   ln -s "$ASSETS_DIR" "$GAME_DIR"
 fi
 
+configure_serial() {
+  key="$1"
+  label="$2"
+
+  if ! wine reg add "$key" /v Serial /t REG_SZ /d "$PLAYER_SERIAL" /f >/dev/null 2>&1; then
+    log "Warning: failed to set multiplayer serial for ${label}."
+  fi
+}
+
 log "Configuring Wine registry for PulseAudio ALSA output and unique multiplayer serial."
 if wine_prefix_ready; then
   if ! wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\Drivers" /v Audio /t REG_SZ /d alsa /f >/dev/null 2>&1; then
     log "Warning: failed to set Wine audio driver."
   fi
-  if ! wine reg add "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Red Alert 2" /v Serial /t REG_SZ /d "$PLAYER_SERIAL" /f >/dev/null 2>&1; then
-    log "Warning: failed to set multiplayer serial in WOW6432Node."
-  fi
-  if ! wine reg add "HKEY_LOCAL_MACHINE\\Software\\Westwood\\Red Alert 2" /v Serial /t REG_SZ /d "$PLAYER_SERIAL" /f >/dev/null 2>&1; then
-    log "Warning: failed to set multiplayer serial."
-  fi
+  configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Red Alert 2" "Red Alert 2 WOW6432Node"
+  configure_serial "HKEY_LOCAL_MACHINE\\Software\\Westwood\\Red Alert 2" "Red Alert 2"
+  configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Yuri's Revenge" "Yuri's Revenge WOW6432Node"
+  configure_serial "HKEY_LOCAL_MACHINE\\Software\\Westwood\\Yuri's Revenge" "Yuri's Revenge"
   wineserver -k >/dev/null 2>&1 || true
 else
   log "Warning: Wine prefix is not ready; skipping registry configuration."

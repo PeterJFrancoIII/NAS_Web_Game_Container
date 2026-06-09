@@ -11,10 +11,12 @@ if [ -f "$ENV_FILE" ]; then
   TLS_DIR="$(read_env_value TLS_DIR /volume2/Data/App_Development/ra2-lan-party/tls "$ENV_FILE")"
   NAS_HOSTNAME="$(read_env_value NAS_HOSTNAME MediaServer2.local "$ENV_FILE")"
   NAS_LAN_IP="$(read_env_value NAS_LAN_IP 192.168.0.193 "$ENV_FILE")"
+  NAS_PUBLIC_HOSTNAME="$(read_env_value NAS_PUBLIC_HOSTNAME "" "$ENV_FILE")"
 else
   TLS_DIR="${TLS_DIR:-/volume2/Data/App_Development/ra2-lan-party/tls}"
   NAS_HOSTNAME="${NAS_HOSTNAME:-MediaServer2.local}"
   NAS_LAN_IP="${NAS_LAN_IP:-192.168.0.193}"
+  NAS_PUBLIC_HOSTNAME="${NAS_PUBLIC_HOSTNAME:-}"
 fi
 
 CERT="${TLS_DIR}/cert.pem"
@@ -41,9 +43,15 @@ subjectAltName = @alt_names
 
 [alt_names]
 DNS.1 = ${NAS_HOSTNAME}
-DNS.2 = MediaServer2
-IP.1 = ${NAS_LAN_IP}
 EOF
+
+san_index=2
+if [ -n "$NAS_PUBLIC_HOSTNAME" ]; then
+  printf 'DNS.%s = %s\n' "$san_index" "$NAS_PUBLIC_HOSTNAME" >>"$OPENSSL_CNF"
+  san_index=$((san_index + 1))
+fi
+printf 'DNS.%s = MediaServer2\n' "$san_index" >>"$OPENSSL_CNF"
+printf 'IP.1 = %s\n' "$NAS_LAN_IP" >>"$OPENSSL_CNF"
 
 if [ -f "$CERT" ] && [ -f "$KEY" ]; then
   printf 'TLS certificate already exists:\n  %s\n  %s\n' "$CERT" "$KEY"
@@ -65,6 +73,7 @@ Generated self-signed TLS certificate for noVNC:
   Certificate: $CERT
   Private key: $KEY
   Hostname:    $NAS_HOSTNAME
+  Public host: ${NAS_PUBLIC_HOSTNAME:-not configured}
   LAN IP SAN:  $NAS_LAN_IP
 
 Browsers will warn about the self-signed certificate until you trust it.
@@ -77,6 +86,12 @@ Start with HTTPS:
 
 Connect:
 
-  Player 1: https://${NAS_LAN_IP}:6081/vnc.html
-  Player 2: https://${NAS_LAN_IP}:6082/vnc.html
+  Player 1 LAN: https://${NAS_LAN_IP}:6081/vnc.html
+  Player 2 LAN: https://${NAS_LAN_IP}:6082/vnc.html
 EOF
+if [ -n "$NAS_PUBLIC_HOSTNAME" ]; then
+  cat <<EOF
+  Player 1 remote: https://${NAS_PUBLIC_HOSTNAME}:6081/vnc.html
+  Player 2 remote: https://${NAS_PUBLIC_HOSTNAME}:6082/vnc.html
+EOF
+fi

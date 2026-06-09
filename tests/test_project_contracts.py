@@ -40,6 +40,7 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
         self.assertEqual(values["PLAYER1_HTTP_PORT"], "6081")
         self.assertEqual(values["PLAYER2_HTTP_PORT"], "6082")
         self.assertEqual(values["NAS_LAN_IP"], "192.168.0.193")
+        self.assertEqual(values["NAS_PUBLIC_HOSTNAME"], "peterjfrancoiii2.synology.me")
         self.assertIn("/ra2-lan-party/tls", values["TLS_DIR"])
         self.assertEqual(values["DRI_DEVICE"], "/dev/dri")
         self.assertEqual(values["RENDER_GID"], "937")
@@ -116,6 +117,7 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertIn("./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro", compose)
         self.assertIn("./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro", compose)
         self.assertIn("./container/latency-overlay.js:/opt/ra2/latency-overlay.js:ro", compose)
+        self.assertIn("./container/cursor-lock.js:/opt/ra2/cursor-lock.js:ro", compose)
         self.assertIn("./container/asound.conf:/etc/asound.conf:ro", compose)
 
     def test_transcode_overlay_grants_gpu_access_without_changing_default_stack(self):
@@ -209,6 +211,7 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("GST_VAAPI_ALL_DRIVERS=1", dockerfile)
         self.assertIn("useradd -m -u 1000 -s /bin/bash commander", dockerfile)
         self.assertIn("COPY container/asound.conf /etc/asound.conf", dockerfile)
+        self.assertIn("COPY container/cursor-lock.js /opt/ra2/cursor-lock.js", dockerfile)
         self.assertIn("USER commander", dockerfile)
 
     def test_asound_routes_alsa_output_to_pulseaudio(self):
@@ -232,6 +235,7 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("AUDIO_DRIFT_CHECK_INTERVAL_MS", novnc_patch)
         self.assertIn("AUDIO_DRIFT_MAX_TOLERANCE", novnc_patch)
         self.assertIn("latency-overlay.js", novnc_patch)
+        self.assertIn("cursor-lock.js", novnc_patch)
         self.assertIn("DRIFT_CHECK_INTERVAL > 0", novnc_patch)
         self.assertIn("AUDIO_TARGET_LATENCY", novnc_patch)
         self.assertIn("AUDIO_MAX_PLAYBACK_RATE_DELTA", novnc_patch)
@@ -247,6 +251,17 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("mkdir -p /tmp/pulse", pulse_launcher)
         self.assertNotIn("--script=", pulse_launcher)
         self.assertNotIn("rate=48000", pulse)
+
+    def test_browser_cursor_lock_supports_fullscreen_toggle_and_release_shortcut(self):
+        cursor_lock = read("container/cursor-lock.js")
+
+        self.assertIn("requestPointerLock", cursor_lock)
+        self.assertIn("requestFullscreen", cursor_lock)
+        self.assertIn("exitPointerLock", cursor_lock)
+        self.assertIn("Ctrl+Alt+L", cursor_lock)
+        self.assertIn('event.code === "KeyL"', cursor_lock)
+        self.assertIn("movementX", cursor_lock)
+        self.assertIn("dispatchSyntheticEvent", cursor_lock)
 
     def test_shell_scripts_have_valid_syntax(self):
         checks = [
@@ -269,6 +284,7 @@ class RuntimeImageContractTest(unittest.TestCase):
             ("sh", "-n", PROJECT_ROOT / "scripts/check-host-transcode.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/enable-host-transcode.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/check-av-sync.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/apply-serial-fix.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/admin-rebuild-check.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/verify-deployment.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/validate-env.sh"),
@@ -319,6 +335,9 @@ class EntrypointContractTest(unittest.TestCase):
         self.assertIn("Software\\\\Wine\\\\Drivers", entrypoint)
         self.assertIn("/d alsa", entrypoint)
         self.assertIn("WOW6432Node\\\\Westwood\\\\Red Alert 2", entrypoint)
+        self.assertIn("WOW6432Node\\\\Westwood\\\\Yuri's Revenge", entrypoint)
+        self.assertIn("Software\\\\Westwood\\\\Yuri's Revenge", entrypoint)
+        self.assertIn("configure_serial", entrypoint)
         self.assertIn("/d \"$PLAYER_SERIAL\"", entrypoint)
 
     def test_entrypoint_stores_vnc_password_in_auth_file_not_process_arguments(self):
@@ -431,6 +450,7 @@ class AutomationScriptsContractTest(unittest.TestCase):
             "scripts/validate-env.sh",
             "scripts/verify-ready.sh",
             "scripts/check-av-sync.sh",
+            "scripts/apply-serial-fix.sh",
             "docs/READY.md",
         ]:
             self.assertTrue((PROJECT_ROOT / script).is_file(), script)
@@ -467,6 +487,8 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("healthcheck-novnc.sh", verifier)
         self.assertIn("docs/HTTPS.md", verifier)
         self.assertIn('scheme="https"', verifier)
+        self.assertIn("NAS_PUBLIC_HOSTNAME", verifier)
+        self.assertIn("Player 1 remote", verifier)
         self.assertIn("audio proxy handshake returns READY", verifier)
         self.assertIn("Audio/video sync budget", verifier)
         self.assertIn("check-av-sync.sh", verifier)
@@ -498,6 +520,14 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("compose.yaml + compose.https.yaml render", verify_ready)
         self.assertIn("-f compose.yaml -f compose.https.yaml config", verify_ready)
 
+    def test_tls_generator_includes_public_ddns_hostname(self):
+        generator = read("scripts/generate-tls-certs.sh")
+
+        self.assertIn("NAS_PUBLIC_HOSTNAME", generator)
+        self.assertIn("Public host:", generator)
+        self.assertIn("Player 1 remote", generator)
+        self.assertIn("Player 2 remote", generator)
+
     def test_compose_defines_browser_healthcheck(self):
         compose = read("compose.yaml")
         self.assertIn("healthcheck:", compose)
@@ -523,6 +553,10 @@ class DocumentationContractTest(unittest.TestCase):
             "compose.https.yaml",
             "https://192.168.0.193:6081/vnc.html",
             "https://192.168.0.193:6082/vnc.html",
+            "https://peterjfrancoiii2.synology.me:6081/vnc.html",
+            "https://peterjfrancoiii2.synology.me:6082/vnc.html",
+            "external TCP `6081`",
+            "external TCP `6082`",
             "secure context",
             "2 GB DS225+ is an OOM risk",
             "sh scripts/bootstrap-nas.sh prepare",

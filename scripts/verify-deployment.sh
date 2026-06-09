@@ -165,14 +165,19 @@ if [ -f "$ENV_FILE" ]; then
   port1="$(read_env_value PLAYER1_HTTP_PORT 6081 "$ENV_FILE")"
   port2="$(read_env_value PLAYER2_HTTP_PORT 6082 "$ENV_FILE")"
   nas_ip="$(read_env_value NAS_LAN_IP 192.168.0.193 "$ENV_FILE")"
+  public_host="$(read_env_value NAS_PUBLIC_HOSTNAME "" "$ENV_FILE")"
   tls_dir="$(read_env_value TLS_DIR /volume2/Data/App_Development/ra2-lan-party/tls "$ENV_FILE")"
   scheme="http"
   if [ -f "$tls_dir/cert.pem" ] && [ -f "$tls_dir/key.pem" ]; then
     scheme="https"
   fi
   printf '\nBrowser URLs:\n'
-  printf '  Player 1: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port1"
-  printf '  Player 2: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port2"
+  printf '  Player 1 LAN: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port1"
+  printf '  Player 2 LAN: %s://%s:%s/vnc.html\n' "$scheme" "$nas_ip" "$port2"
+  if [ -n "$public_host" ]; then
+    printf '  Player 1 remote: %s://%s:%s/vnc.html\n' "$scheme" "$public_host" "$port1"
+    printf '  Player 2 remote: %s://%s:%s/vnc.html\n' "$scheme" "$public_host" "$port2"
+  fi
   if [ "$scheme" = "http" ]; then
     printf '\n[WARN] Use HTTPS to avoid noVNC secure-context crashes. See docs/HTTPS.md\n'
   fi

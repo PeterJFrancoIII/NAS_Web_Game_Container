@@ -6,6 +6,8 @@ ARG WINE_BUILD=10.8
 ARG WINE_VARIANT=amd64-wow64
 
 COPY container/patch-novnc.sh /opt/ra2/patch-novnc.sh
+COPY container/latency-overlay.js /opt/ra2/latency-overlay.js
+COPY container/cursor-lock.js /opt/ra2/cursor-lock.js
 
 RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
     && pacman -Syu --noconfirm \
@@ -64,6 +66,7 @@ COPY container/websockify-tokens.cfg /opt/ra2/websockify-tokens.cfg
 COPY --chown=commander:commander container/audio-proxy.sh /opt/ra2/audio-proxy.sh
 COPY --chown=commander:commander container/latency-proxy.sh /opt/ra2/latency-proxy.sh
 COPY --chown=commander:commander container/latency-overlay.js /opt/ra2/latency-overlay.js
+COPY --chown=commander:commander container/cursor-lock.js /opt/ra2/cursor-lock.js
 COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
 COPY --chown=commander:commander container/start-websockify.sh /opt/ra2/start-websockify.sh
 COPY --chown=commander:commander container/healthcheck-novnc.sh /opt/ra2/healthcheck-novnc.sh

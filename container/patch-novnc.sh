@@ -25,6 +25,11 @@ if [ "${LATENCY_OVERLAY_ENABLED}" = "1" ]; then
   fi
 fi
 
+cp /opt/ra2/cursor-lock.js "${NOVNC_DIR}/cursor-lock.js"
+if ! grep -q 'cursor-lock.js' "${NOVNC_DIR}/vnc.html"; then
+  sed -i 's|</head>|  <script defer src="cursor-lock.js"></script>\n</head>|' "${NOVNC_DIR}/vnc.html"
+fi
+
 # Route VNC and audio over the same websockify token listener.
 sed -i "s/UI.initSetting('path', 'websockify')/UI.initSetting('path', 'websockify?token=vnc')/" "${NOVNC_DIR}/app/ui.js"
 sed -i 's/UI.initSetting("path", "websockify")/UI.initSetting("path", "websockify?token=vnc")/' "${NOVNC_DIR}/app/ui.js"

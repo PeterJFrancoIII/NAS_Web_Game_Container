@@ -23,7 +23,7 @@ cd /volume2/Data/App_Development/ra2-lan-party/project
 sh scripts/generate-tls-certs.sh
 ```
 
-This writes `cert.pem` and `key.pem` under `TLS_DIR` (default: `../tls`). The certificate includes SANs for `NAS_HOSTNAME`, `MediaServer2`, and `NAS_LAN_IP` from `.env`.
+This writes `cert.pem` and `key.pem` under `TLS_DIR` (default: `../tls`). The certificate includes SANs for `NAS_HOSTNAME`, optional `NAS_PUBLIC_HOSTNAME`, `MediaServer2`, and `NAS_LAN_IP` from `.env`.
 
 ### 2. Start with the HTTPS overlay
 
@@ -36,6 +36,13 @@ docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
 ```text
 Player 1: https://192.168.0.193:6081/vnc.html
 Player 2: https://192.168.0.193:6082/vnc.html
+```
+
+For remote access through Synology DDNS, set `NAS_PUBLIC_HOSTNAME=peterjfrancoiii2.synology.me` in `.env`, regenerate TLS if the certificate already existed, and connect through the forwarded player ports:
+
+```text
+Player 1: https://peterjfrancoiii2.synology.me:6081/vnc.html
+Player 2: https://peterjfrancoiii2.synology.me:6082/vnc.html
 ```
 
 Browsers will warn about the self-signed certificate. Trust it on each player machine, or use Option B for a DSM-managed certificate.
@@ -80,6 +87,12 @@ Do **not** change the URL to `https://192.168.0.193:6081` unless you also enable
 
 Without certificates, the stack still starts but logs a warning and serves plain HTTP (not recommended).
 
-## Firewall
+## Firewall and DDNS Routing
 
-Allow the same TCP ports as before (`6081`, `6082`) for Option A, or HTTPS (`443`) for Option B. Do not expose these ports to the public internet without additional access controls.
+Allow the same TCP ports as before (`6081`, `6082`) for Option A, or HTTPS (`443`) for Option B. For DDNS access with Option A, configure your router and DSM firewall so:
+
+- External TCP `6081` forwards to NAS `192.168.0.193:6081` for Player 1.
+- External TCP `6082` forwards to NAS `192.168.0.193:6082` for Player 2.
+- The remote browser uses `https://peterjfrancoiii2.synology.me:6081/vnc.html` or `:6082`.
+
+Do not expose these ports to the public internet without strong VNC passwords and, ideally, a VPN or DSM reverse proxy with additional access controls.
