@@ -7,6 +7,7 @@
     settingsVersion: SETTINGS_VERSION,
     videoQuality: "balanced",
     videoCodec: "H264",
+    videoResolution: "native",
     videoBitrate: "900000",
     audioEncoder: "opus",
     audioQuality: "44100",
@@ -16,6 +17,8 @@
   const VIDEO_DECODER_CODECS = {
     H264: ["avc1.42E01F"],
     H265: ["hev1.1.6.L93.B0", "hvc1.1.6.L93.B0"],
+    // Main10 profile (profile_idc=2, compatibility=4) for 10-bit HEVC.
+    H265_10: ["hev1.2.4.L93.B0", "hvc1.2.4.L93.B0"],
   };
 
   const canvas = document.getElementById("canvas");
@@ -29,6 +32,7 @@
   const pendingNotice = document.getElementById("pendingNotice");
   const videoQualityEl = document.getElementById("videoQuality");
   const videoCodecEl = document.getElementById("videoCodec");
+  const videoResolutionEl = document.getElementById("videoResolution");
   const videoBitrateEl = document.getElementById("videoBitrate");
   const audioEncoderEl = document.getElementById("audioEncoder");
   const audioBitrateEl = document.getElementById("audioBitrate");
@@ -104,6 +108,7 @@
       settingsVersion: SETTINGS_VERSION,
       videoQuality: videoQualityEl.value,
       videoCodec: videoCodecEl.value,
+      videoResolution: videoResolutionEl.value,
       videoBitrate: videoBitrateEl.value,
       audioEncoder: audioEncoderEl.value,
       audioBitrate: audioBitrateEl.value,
@@ -115,6 +120,7 @@
   function applySettingsToUi(settings) {
     videoQualityEl.value = settings.videoQuality;
     videoCodecEl.value = settings.videoCodec;
+    videoResolutionEl.value = settings.videoResolution || "native";
     videoBitrateEl.value = settings.videoBitrate;
     audioEncoderEl.value = settings.audioEncoder;
     audioBitrateEl.value = settings.audioBitrate;
@@ -140,14 +146,22 @@
     const unavailableVideo = (available.unavailable && available.unavailable.videoCodec) || {};
     const unavailableAudio = (available.unavailable && available.unavailable.audioEncoder) || {};
     for (const option of videoCodecEl.options) {
-      if (option.value === "H265") {
-        option.disabled = !available.videoCodec.includes("H265");
-        option.title = unavailableVideo.H265 || "";
-      }
+      const codecAvailable = available.videoCodec.includes(option.value);
+      option.disabled = !codecAvailable;
+      option.title = codecAvailable ? "" : unavailableVideo[option.value] || "";
     }
     if (!available.videoCodec.includes(videoCodecEl.value)) {
       videoCodecEl.value = "H264";
       saveSettings(currentSettingsFromUi());
+    }
+    if (available.videoResolution) {
+      for (const option of videoResolutionEl.options) {
+        option.disabled = !available.videoResolution.includes(option.value);
+      }
+      if (!available.videoResolution.includes(videoResolutionEl.value)) {
+        videoResolutionEl.value = "native";
+        saveSettings(currentSettingsFromUi());
+      }
     }
     for (const option of videoBitrateEl.options) {
       option.disabled = available.videoBitrate && !available.videoBitrate.includes(Number(option.value));
@@ -165,7 +179,7 @@
     const lines = [
       "RA2 Ultra transport",
       `connection: ${connectionState}`,
-      `requested: ${settings.videoQuality}/${settings.videoCodec}@${settings.videoBitrate}bps ${settings.audioEncoder}@${settings.audioBitrate}bps/${settings.audioQuality}Hz input=${settings.inputMoveHz}Hz`,
+      `requested: ${settings.videoQuality}/${settings.videoCodec}/${settings.videoResolution}@${settings.videoBitrate}bps ${settings.audioEncoder}@${settings.audioBitrate}bps/${settings.audioQuality}Hz input=${settings.inputMoveHz}Hz`,
     ];
     if (activeTransport) {
       lines.push(`active: ${activeTransport.video} ${activeTransport.audio} input=${activeTransport.input}`);
@@ -222,7 +236,7 @@
 
   function videoCodecString(codec) {
     const upper = String(codec || "H264").toUpperCase();
-    if (upper === "H265" || upper === "HEVC") {
+    if (upper === "H265" || upper === "HEVC" || upper === "H265_10") {
       return activeVideoDecoderCodec;
     }
     return "avc1.42E01F";
@@ -320,16 +334,23 @@
     if (videoDecoderCodec) {
       activeVideoDecoderCodec = videoDecoderCodec;
     } else if (requestedVideo !== "H264") {
-      const h264DecoderCodec = await supportedVideoDecoderCodec("H264");
-      if (h264DecoderCodec) {
-        compatible.videoCodec = "H264";
-        activeVideoDecoderCodec = h264DecoderCodec;
+      // 10-bit HEVC degrades to 8-bit HEVC before giving up and using H.264.
+      const fallbackOrder = requestedVideo === "H265_10" ? ["H265", "H264"] : ["H264"];
+      for (const fallback of fallbackOrder) {
+        const fallbackDecoderCodec = await supportedVideoDecoderCodec(fallback);
+        if (!fallbackDecoderCodec) continue;
+        compatible.videoCodec = fallback;
+        activeVideoDecoderCodec = fallbackDecoderCodec;
         browserFallbacks.push({
           field: "videoCodec",
           requested: requestedVideo,
-          active: "H264",
-          reason: "HEVC VideoDecoder unsupported in this browser",
+          active: fallback,
+          reason:
+            requestedVideo === "H265_10" && fallback === "H265"
+              ? "10-bit HEVC VideoDecoder unsupported in this browser"
+              : "HEVC VideoDecoder unsupported in this browser",
         });
+        break;
       }
     }
     if (compatible.audioEncoder === "opus" && !(await supportsOpusAudioDecoder())) {
@@ -701,7 +722,7 @@
       e.stopPropagation();
       enableSelectedAudio();
     });
-    for (const el of [videoQualityEl, videoCodecEl, videoBitrateEl, audioEncoderEl, audioBitrateEl, audioQualityEl, inputMoveHzEl]) {
+    for (const el of [videoQualityEl, videoCodecEl, videoResolutionEl, videoBitrateEl, audioEncoderEl, audioBitrateEl, audioQualityEl, inputMoveHzEl]) {
       el.addEventListener("change", () => {
         const settings = currentSettingsFromUi();
         saveSettings(settings);

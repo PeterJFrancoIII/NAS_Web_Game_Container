@@ -84,6 +84,8 @@ The game must be pinned to one CPU per player:
 
 The launcher is started through `taskset -c "$GAME_CPUSET"`, and the watchdog re-applies `taskset -pc "$GAME_CPUSET"` to live `gamemd.exe` processes. The second step matters because `gamemd.exe` can escape the launcher's affinity after Wine starts child processes.
 
+The capture/encode helper is isolated onto separate cores through `ULTRA_STREAM_CPUSET` (default `2,3` on the 4-core J4125). The gateway launches the helper through `taskset -c "$ULTRA_STREAM_CPUSET"` so GStreamer capture/convert/encode never preempts a pinned game core. This complements, and never replaces, the game-side pin. Verified live: the helper affinity list is `2,3` while games keep cores `0` and `1`.
+
 The expected live checks are:
 
 ```bash
@@ -116,9 +118,11 @@ Observed stability evidence suggests CPU pinning plus the `win32` prefix are the
 
 Current ultra defaults:
 
-- Resolution: `1024x768`
-- Video codec: `H264`
+- Display: `RESOLUTION=1024x768` at `RA2_DISPLAY_DEPTH=16` (16 bpp is the validated golden value; do not change depth casually — the game and capture path were proven at 16)
+- Stream size: follows the display (`native`); the transport menu can downscale per session to 960x720 / 800x600 / 640x480 on the GPU, with input coordinates mapped back onto the display
+- Video codec: `H264` (default); H.265 8-bit and H.265 10-bit are selectable hardware options
 - Hardware encode required: `ULTRA_VIDEO_REQUIRE_HW=1`
+- HEVC options exposed: `ULTRA_H265_TEST_ENABLED=1`
 - Frame rate: `24`
 - Bitrate: `900000`
 - Keyframe interval: `1` second
@@ -127,9 +131,13 @@ Current ultra defaults:
 - Audio frame size: `10` ms
 - Audio source rate: `44100`
 - Audio transport rate: `48000`
+- Encoder CPU isolation: `ULTRA_STREAM_CPUSET=2,3`
+- GPU convert/scale: `ULTRA_VIDEO_GPU_SCALE=1` (vapostproc front before the VA encoder)
 - TLS enabled: `ULTRA_GATEWAY_TLS=1`
 
-H.265 is not the default golden path. It is available as a test mode behind `ULTRA_H265_TEST_ENABLED=1`; Chromium WebCodecs requires the `hev1.1.6.L93.B0` codec string, and the current NAS uses VA-API `vah265enc` rather than QSV/MSDK factories. Keep H.264 as the default until H.265 has longer gameplay stability coverage. For H.265/QSV work, start with `video-diagnostics.log` under each player's log directory.
+The video pipeline uses a GPU front when `vapostproc` is available: cheap CPU RGB16->BGRx expand, then GPU color conversion/scaling/upload feeding zero-copy VA surfaces into the VA encoder (`vah264enc` or `vah265enc`). Measured on the J4125: pipeline-only CPU dropped from 20.5% to 12.3% of a core (~40%), and the production helper total (including base64/IO) dropped from ~23% to ~16%. `ULTRA_VIDEO_GPU_SCALE=0` reverts to the CPU convert pipeline at runtime without a rebuild, and upgrades keep the previous image tagged `ra2-lan-party:ultra-prev` as the rollback path.
+
+H.265 hardware encode is verified on both players: the i965 driver exposes `VAProfileHEVCMain` and `VAProfileHEVCMain10` encode entrypoints, and `vah265enc` accepts NV12 (8-bit) and P010_10LE (10-bit, `main-10` profile) through the same GPU front at the same measured pipeline cost as H.264 (~14% of one core at 1024x768@24). The gateway maps the UI's `H265_10` choice to `ULTRA_VIDEO_CODEC=H265` + `ULTRA_VIDEO_BIT_DEPTH=10` for the helper. Browser decode strings: `hev1.1.6.L93.B0` (8-bit) and `hev1.2.4.L93.B0` (10-bit), with `hvc1` fallbacks; clients without 10-bit HEVC decode degrade to 8-bit HEVC, then H.264. H.264 remains the default codec until HEVC has longer gameplay stability coverage. Because the game renders at 16 bpp, 10-bit mainly reduces encoder banding today and becomes more meaningful at `RA2_DISPLAY_DEPTH=24` (unproven for gameplay; not golden).
 
 Compare H.265 using lower target bitrates, not the same bitrate as H.264. The VA encoder is rate-controlled, so equal target bitrates produce similar bandwidth and may look visually identical on low-motion RA2 screens.
 
@@ -233,6 +241,8 @@ Manual gameplay verification should include:
 Safe tuning areas:
 
 - H.264 bitrate and quality presets
+- selecting H.265 8-bit / 10-bit in the transport menu (hardware-verified; falls back to H.264 automatically)
+- per-session stream resolution downscales (960x720 / 800x600 / 640x480)
 - frame rate between low and balanced values
 - Opus bitrate and frame size
 - mouse move polling rate
@@ -244,7 +254,8 @@ High-risk tuning areas:
 - Wine prefix architecture
 - replacing `win32` prefix with WoW64 or `win64`
 - adding input guards
-- enabling H.265 in the browser path
+- changing `RESOLUTION` or `RA2_DISPLAY_DEPTH` (restarts the game display; 1024x768x16 is the proven configuration)
+- making H.265 the default codec before long gameplay coverage
 - adding heavyweight desktop remoting processes back into the primary container
 
 When optimizing, change one high-risk variable at a time and keep the golden-master rollback path intact.

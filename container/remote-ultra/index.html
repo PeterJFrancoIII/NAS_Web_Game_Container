@@ -101,7 +101,17 @@
         <label for="videoCodec">Hardware encoder</label>
         <select id="videoCodec">
           <option value="H264" selected>H.264 (VAAPI)</option>
-          <option value="H265">H.265 / HEVC (test mode)</option>
+          <option value="H265">H.265 / HEVC 8-bit (hardware)</option>
+          <option value="H265_10">H.265 / HEVC 10-bit (hardware)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="videoResolution">Stream resolution</label>
+        <select id="videoResolution">
+          <option value="native" selected>Native (game display)</option>
+          <option value="960x720">960 x 720</option>
+          <option value="800x600">800 x 600</option>
+          <option value="640x480">640 x 480</option>
         </select>
       </div>
       <div class="field">

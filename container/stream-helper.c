@@ -33,6 +33,18 @@ static void log_factory_status(const gchar *name) {
   g_printerr("[stream-helper] factory %s=%s\n", name, factory_exists(name) ? "present" : "missing");
 }
 
+/* When TRUE the pipeline front hands frames to the GPU (vapostproc) for
+ * convert/scale/upload and the encoder segment omits its system-memory caps.
+ * Measured on the J4125: cuts helper CPU ~40% versus CPU videoconvert. */
+static gboolean gpu_front_active = FALSE;
+/* VA surface format the GPU front negotiates with the encoder: NV12 for
+ * 8-bit encodes, P010_10LE when a 10-bit HEVC encode is requested. */
+static const gchar *gpu_front_format = "NV12";
+
+static gboolean gpu_scale_requested(void) {
+  return g_strcmp0(env_str("ULTRA_VIDEO_GPU_SCALE", "1"), "0") != 0;
+}
+
 static gchar *audio_encoder_desc(gint audio_rate) {
   const gchar *codec = env_str("ULTRA_AUDIO_CODEC", "opus");
   gint bitrate = MAX(env_int("ULTRA_AUDIO_BITRATE", 64000), 1);
@@ -89,6 +101,17 @@ static gchar *video_encoder_desc(void) {
           bitrate, key_distance);
     }
     if (factory_exists("vah264enc")) {
+      if (gpu_scale_requested() && factory_exists("vapostproc")) {
+        gpu_front_active = TRUE;
+        gpu_front_format = "NV12";
+        g_printerr("[stream-helper] using hardware H.264 encoder vah264enc with GPU convert/scale (vapostproc)\n");
+        return g_strdup_printf(
+            "vah264enc bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 cabac=false "
+            "dct8x8=false target-usage=7 ! "
+            "video/x-h264,profile=constrained-baseline,stream-format=byte-stream,alignment=au ! "
+            "h264parse config-interval=-1",
+            bitrate, key_distance);
+      }
       g_printerr("[stream-helper] using hardware H.264 encoder vah264enc\n");
       return g_strdup_printf(
           "video/x-raw,format=NV12 ! "
@@ -112,6 +135,13 @@ static gchar *video_encoder_desc(void) {
   }
 
   if (g_ascii_strcasecmp(codec, "H265") == 0 || g_ascii_strcasecmp(codec, "HEVC") == 0) {
+    /* 10-bit encodes feed P010 surfaces into the Main10 entrypoint; both
+     * Main and Main10 EncSlice are exposed by the i965 driver on the J4125. */
+    gint bit_depth = env_int("ULTRA_VIDEO_BIT_DEPTH", 8);
+    const gchar *raw_format = (bit_depth == 10) ? "P010_10LE" : "NV12";
+    const gchar *h265_caps = (bit_depth == 10)
+        ? "video/x-h265,profile=main-10,stream-format=byte-stream,alignment=au"
+        : "video/x-h265,stream-format=byte-stream,alignment=au";
     log_factory_status("qsvh265enc");
     log_factory_status("msdkh265enc");
     log_factory_status("vah265enc");
@@ -120,15 +150,27 @@ static gchar *video_encoder_desc(void) {
       g_printerr("[stream-helper] QSV/MSDK H.265 factory is present but the validated ultra pipeline still uses VA encoders until QSV caps are proven\n");
     }
     if (factory_exists("vah265enc")) {
-      g_printerr("[stream-helper] using hardware H.265 encoder vah265enc\n");
+      if (gpu_scale_requested() && factory_exists("vapostproc")) {
+        gpu_front_active = TRUE;
+        gpu_front_format = raw_format;
+        g_printerr("[stream-helper] using hardware H.265 encoder vah265enc (%d-bit %s) with GPU convert/scale (vapostproc)\n",
+                   bit_depth, raw_format);
+        return g_strdup_printf(
+            "vah265enc bitrate=%d key-int-max=%d ! %s ! h265parse config-interval=-1",
+            bitrate, key_distance, h265_caps);
+      }
+      g_printerr("[stream-helper] using hardware H.265 encoder vah265enc (%d-bit %s)\n",
+                 bit_depth, raw_format);
       return g_strdup_printf(
-          "video/x-raw,format=NV12 ! "
-          "vah265enc bitrate=%d key-int-max=%d ! "
-          "video/x-h265,stream-format=byte-stream,alignment=au ! "
+          "video/x-raw,format=%s ! "
+          "vah265enc bitrate=%d key-int-max=%d ! %s ! "
           "h265parse config-interval=-1",
-          bitrate, key_distance);
+          raw_format, bitrate, key_distance, h265_caps);
     }
     if (factory_exists("vaapih265enc")) {
+      if (bit_depth == 10) {
+        g_printerr("[stream-helper] 10-bit HEVC requires vah265enc; vaapih265enc falls back to 8-bit NV12\n");
+      }
       g_printerr("[stream-helper] using hardware H.265 encoder vaapih265enc\n");
       return g_strdup_printf(
           "video/x-raw,format=NV12 ! "
@@ -165,18 +207,39 @@ static gchar *pipeline_desc(void) {
   const gchar *queue =
       "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream";
 
-  gchar *desc = g_strdup_printf(
-      "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
-      "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
-      "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
-      "%s ! appsink name=vsink emit-signals=true max-buffers=1 drop=true sync=false "
-      "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
-      "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
-      "audioconvert ! audioresample quality=0 ! "
-      "%s ! %s ! "
-      "appsink name=asink emit-signals=true max-buffers=4 drop=true sync=false",
-      display, fps, width, height, fps, queue, encoder, pulse_port, audio_rate, audio_encoder,
-      queue);
+  gchar *desc;
+  if (gpu_front_active) {
+    /* Cheap CPU expand (RGB16 -> BGRx), then vapostproc does the expensive
+     * convert/scale/upload on the iGPU and feeds VA surfaces zero-copy into
+     * the VA encoder. The leaky queue drops stale frames before any
+     * conversion work is spent on them. */
+    desc = g_strdup_printf(
+        "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
+        "videorate max-rate=%d ! video/x-raw,framerate=%d/1 ! "
+        "%s ! videoconvert ! video/x-raw,format=BGRx ! "
+        "vapostproc ! video/x-raw(memory:VAMemory),format=%s,width=%d,height=%d ! "
+        "%s ! appsink name=vsink emit-signals=true max-buffers=1 drop=true sync=false "
+        "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
+        "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
+        "audioconvert ! audioresample quality=0 ! "
+        "%s ! %s ! "
+        "appsink name=asink emit-signals=true max-buffers=4 drop=true sync=false",
+        display, fps, fps, queue, gpu_front_format, width, height, encoder, pulse_port,
+        audio_rate, audio_encoder, queue);
+  } else {
+    desc = g_strdup_printf(
+        "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
+        "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
+        "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
+        "%s ! appsink name=vsink emit-signals=true max-buffers=1 drop=true sync=false "
+        "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
+        "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
+        "audioconvert ! audioresample quality=0 ! "
+        "%s ! %s ! "
+        "appsink name=asink emit-signals=true max-buffers=4 drop=true sync=false",
+        display, fps, width, height, fps, queue, encoder, pulse_port, audio_rate, audio_encoder,
+        queue);
+  }
 
   g_free(encoder);
   g_free(audio_encoder);

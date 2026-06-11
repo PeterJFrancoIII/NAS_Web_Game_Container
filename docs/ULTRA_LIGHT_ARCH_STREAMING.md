@@ -42,9 +42,9 @@ Only ports **6081** and **6082** are required for browser play (HTTPS/WSS on the
 
 ## Defaults
 
-- Resolution: 1024×768
+- Display: 1024×768 @ 16-bit (`RESOLUTION` × `RA2_DISPLAY_DEPTH`); the encoded stream follows the display unless overridden
 - Video: H.264 VAAPI @ **24 fps**
-- Audio: Opus @ **96 kbps** by default, sourced from 44.1 kHz game audio and packetized at Opus' 48 kHz transport rate; PCM remains an optional fallback
+- Audio: Opus @ **64 kbps** by default, sourced from 44.1 kHz game audio and packetized at Opus' 48 kHz transport rate; PCM remains an optional fallback
 - Input: xdotool over WSS (same event schema as WebRTC input proxy)
 
 ## Transport settings menu
@@ -54,7 +54,8 @@ The browser client includes a collapsible **Transport** panel (top-left). Settin
 | Setting | Options |
 |---------|---------|
 | Video quality | `low` (20 fps), `balanced` (24 fps), `sharp` (24 fps, higher bitrate) |
-| Hardware encoder | H.264 VAAPI (default), H.265 if server hardware supports it |
+| Hardware encoder | H.264 VAAPI (default), H.265/HEVC 8-bit, H.265/HEVC 10-bit (Main10) — all VA-API hardware encodes |
+| Stream resolution | `native` (game display), 960×720, 800×600, 640×480 — downscaled on the GPU; input coordinates are mapped back onto the display |
 | Video bitrate | 300 kbps through 2.0 Mbps; use lower values to test H.265 efficiency |
 | Audio encoder | Opus low-latency (default), PCM fallback |
 | Audio quality | 64 / 96 / 128 kbps plus 44.1 kHz or 48 kHz source audio |
@@ -70,11 +71,13 @@ WINE_ARCH=win32
 WINE_ENABLE_MULTILIB=1
 PLAYER1_GAME_CPUSET=0
 PLAYER2_GAME_CPUSET=1
+RESOLUTION=1024x768
+RA2_DISPLAY_DEPTH=16
 ULTRA_VIDEO_FPS=24
 ULTRA_VIDEO_CODEC=H264
 ULTRA_VIDEO_BITRATE=900000
 ULTRA_VIDEO_DIAGNOSTICS=1
-ULTRA_H265_TEST_ENABLED=0
+ULTRA_H265_TEST_ENABLED=1
 # Optional while debugging H.265/QSV:
 # ULTRA_GST_DEBUG=qsv*:6,msdk*:6,va*:5,vah265enc:6,vaapih265enc:6
 ULTRA_GATEWAY_TLS=1
@@ -84,9 +87,19 @@ ULTRA_AUDIO_RATE=44100
 ULTRA_AUDIO_TRANSPORT_RATE=48000
 ```
 
-H.265 is a test path. Set `ULTRA_H265_TEST_ENABLED=1` before trying it in the transport menu. If no HEVC encoder is available, or the flag is off, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+### Resolution and bit depth
 
-Current H.265 test result: Chromium WebCodecs renders the stream when the client uses `hev1.1.6.L93.B0`. The DS225+ stack does not expose QSV/MSDK GStreamer factories (`qsvh265enc` / `msdkh265enc`), but it does expose VA-API H.265 through `vah265enc` on Intel Gemini Lake.
+- `RESOLUTION` sets the Xvfb display (and therefore the game) size; the native stream size follows it automatically. Changing it is a deploy-time action (container recreate) because the game must restart.
+- `RA2_DISPLAY_DEPTH` sets the Xvfb bit depth. **16 is the validated golden-master value for RA2**; 24 also enables a faster BGRx capture path but is unproven for long gameplay sessions.
+- The **Stream resolution** transport setting downscales the encode per session on the GPU (vapostproc) without touching the game; the gateway scales browser input coordinates back onto the display so clicks stay accurate.
+
+### H.265 / HEVC
+
+`ULTRA_H265_TEST_ENABLED=1` (now the compose default) exposes the H.265 options in the transport menu; H.264 stays the default codec until HEVC has longer gameplay coverage. If no HEVC encoder is available, or the flag is off, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+
+Verified hardware status on the DS225+ (Gemini Lake, i965 VA driver): `VAProfileHEVCMain` and `VAProfileHEVCMain10` both expose `VAEntrypointEncSlice`, and both players encode H.265 8-bit (NV12) and 10-bit (P010_10LE, `main-10` profile) through `vah265enc` with the same vapostproc GPU front as H.264 at the same measured pipeline cost (~14% of one core at 1024×768@24). QSV/MSDK factories (`qsvh265enc` / `msdkh265enc`) are not exposed by this stack; VA-API is the hardware path. Browser side, 8-bit uses `hev1.1.6.L93.B0` and 10-bit uses `hev1.2.4.L93.B0` (`hvc1` variants probed as fallback); if the browser lacks 10-bit HEVC decode the client degrades to 8-bit HEVC, then H.264.
+
+Note the game renders at 16 bpp, so 10-bit encode cannot add source color depth today — it mainly reduces banding from the encoder's internal processing. It becomes more meaningful with `RA2_DISPLAY_DEPTH=24`.
 
 Do not expect H.265 to look dramatically different at the exact same target bitrate. The hardware encoder is rate-controlled, so the useful test is whether H.265 at 300-600 kbps looks comparable to H.264 at 600-900 kbps. The transport panel reports live encoded video kbps to make that comparison visible.
 
