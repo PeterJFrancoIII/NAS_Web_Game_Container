@@ -61,6 +61,8 @@ H265_TEST_ENABLED = os.environ.get("ULTRA_H265_TEST_ENABLED", "0").lower() in {
     "true",
     "yes",
 }
+ACTIVE_SESSION: Optional["StreamSession"] = None
+ACTIVE_SESSION_LOCK = asyncio.Lock()
 
 KEYSYM_MAP = {
     "ArrowUp": "Up",
@@ -165,7 +167,7 @@ def default_settings() -> dict:
         "videoCodec": os.environ.get("ULTRA_VIDEO_CODEC", "H264").upper(),
         "audioEncoder": os.environ.get("ULTRA_AUDIO_CODEC", "opus").lower(),
         "audioQuality": str(int(os.environ.get("ULTRA_AUDIO_RATE", "44100"))),
-        "audioBitrate": int(os.environ.get("ULTRA_AUDIO_BITRATE", "96000")),
+        "audioBitrate": int(os.environ.get("ULTRA_AUDIO_BITRATE", "64000")),
         "audioTransportRate": int(os.environ.get("ULTRA_AUDIO_TRANSPORT_RATE", "48000")),
         "inputMoveHz": int(os.environ.get("ULTRA_INPUT_MOVE_HZ", "125")),
         "videoBitrate": int(os.environ.get("ULTRA_VIDEO_BITRATE", "900000")),
@@ -595,6 +597,27 @@ class StreamSession:
         self.requested_settings: dict = {}
         self.fallbacks: list[dict] = []
         self.helper_env: dict = build_helper_env(defaults)
+        self.replaced = False
+
+    async def become_active(self) -> None:
+        global ACTIVE_SESSION
+        async with ACTIVE_SESSION_LOCK:
+            previous = ACTIVE_SESSION
+            if previous and previous is not self:
+                previous.replaced = True
+                print(
+                    f"[ultra-gateway] replacing previous stream session (player {PLAYER_ID})",
+                    flush=True,
+                )
+                await previous.stop_helper("replaced_by_new_session")
+                await previous.websocket.close(1012, "replaced by a newer stream session")
+            ACTIVE_SESSION = self
+
+    async def clear_active(self) -> None:
+        global ACTIVE_SESSION
+        async with ACTIVE_SESSION_LOCK:
+            if ACTIVE_SESSION is self:
+                ACTIVE_SESSION = None
 
     async def start_helper(self) -> None:
         if self.helper and self.helper.poll() is None:
@@ -690,6 +713,7 @@ class StreamSession:
             self.fallbacks = validated["fallbacks"]
             self.helper_env = build_helper_env(self.active_settings)
             self.input.set_move_hz(self.active_settings["inputMoveHz"])
+            await self.become_active()
             await self.start_helper()
             await self.websocket.send(
                 json.dumps(
@@ -773,6 +797,7 @@ async def stream_handler(websocket) -> None:
     finally:
         session.input.release_all_keys()
         await session.stop_helper("disconnect")
+        await session.clear_active()
         elapsed = time.monotonic() - session.connected_at
         print(
             f"[ultra-gateway] client disconnected frames={session.frames_sent} "

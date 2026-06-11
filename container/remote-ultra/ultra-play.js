@@ -2,13 +2,15 @@
   "use strict";
 
   const SETTINGS_KEY = "ra2UltraTransportSettings";
+  const SETTINGS_VERSION = 2;
   const DEFAULT_SETTINGS = {
+    settingsVersion: SETTINGS_VERSION,
     videoQuality: "balanced",
     videoCodec: "H264",
     videoBitrate: "900000",
     audioEncoder: "opus",
     audioQuality: "44100",
-    audioBitrate: "96000",
+    audioBitrate: "64000",
     inputMoveHz: "125",
   };
   const VIDEO_DECODER_CODECS = {
@@ -43,7 +45,7 @@
   let activeVideoCodec = "H264";
   let activeAudioEncoder = "opus";
   let activeAudioRate = 44100;
-  let activeAudioBitrate = 96000;
+  let activeAudioBitrate = 64000;
   let framesDecoded = 0;
   let framesDropped = 0;
   let lastMoveAt = 0;
@@ -73,12 +75,21 @@
   let audioPeak = 0;
   let lastAudioAt = 0;
   let streamStatsStartedAt = performance.now();
+  const activeAudioSources = new Set();
 
   function loadSettings() {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
       if (!raw) return { ...DEFAULT_SETTINGS };
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      const saved = JSON.parse(raw);
+      if (
+        saved.settingsVersion !== SETTINGS_VERSION &&
+        String(saved.audioEncoder || DEFAULT_SETTINGS.audioEncoder).toLowerCase() === "opus" &&
+        String(saved.audioBitrate || DEFAULT_SETTINGS.audioBitrate) === "96000"
+      ) {
+        saved.audioBitrate = DEFAULT_SETTINGS.audioBitrate;
+      }
+      return { ...DEFAULT_SETTINGS, ...saved, settingsVersion: SETTINGS_VERSION };
     } catch {
       return { ...DEFAULT_SETTINGS };
     }
@@ -90,6 +101,7 @@
 
   function currentSettingsFromUi() {
     return {
+      settingsVersion: SETTINGS_VERSION,
       videoQuality: videoQualityEl.value,
       videoCodec: videoCodecEl.value,
       videoBitrate: videoBitrateEl.value,
@@ -251,83 +263,10 @@
     return context;
   }
 
-  function playTestTone() {
-    const context = ensureAudioContext();
-    const scheduleTone = () => {
-      const osc = context.createOscillator();
-      const gain = context.createGain();
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.2, context.currentTime + 0.03);
-      gain.gain.setValueAtTime(0.2, context.currentTime + 0.8);
-      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 1.0);
-      osc.connect(gain);
-      gain.connect(context.destination);
-      osc.start();
-      osc.stop(context.currentTime + 1.05);
-      audioOutputStatus = `test tone sent (${context.state})`;
-      noteAudioPeak(0.2);
-      audioNextTime = Math.max(audioNextTime, context.currentTime + 1.1);
-      updateTransportStatus();
-    };
-    if (context.state !== "running") {
-      context.resume().then(scheduleTone).catch((e) => {
-        audioErrors += 1;
-        console.error("audio test", e);
-        updateTransportStatus();
-      });
-    } else {
-      scheduleTone();
-    }
-    playElementTone();
-  }
-
-  function wavToneUrl() {
-    const sampleRate = 44100;
-    const seconds = 1;
-    const frames = sampleRate * seconds;
-    const dataBytes = frames * 2;
-    const wav = new ArrayBuffer(44 + dataBytes);
-    const view = new DataView(wav);
-    const writeAscii = (offset, value) => {
-      for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
-    };
-    writeAscii(0, "RIFF");
-    view.setUint32(4, 36 + dataBytes, true);
-    writeAscii(8, "WAVE");
-    writeAscii(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeAscii(36, "data");
-    view.setUint32(40, dataBytes, true);
-    for (let i = 0; i < frames; i += 1) {
-      const envelope = i < 2000 ? i / 2000 : Math.max(0, (frames - i) / 6000);
-      const sample = Math.sin((2 * Math.PI * 880 * i) / sampleRate) * 0.35 * Math.min(1, envelope);
-      view.setInt16(44 + i * 2, Math.round(sample * 32767), true);
-    }
-    return URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
-  }
-
-  function playElementTone() {
-    const audio = new Audio(wavToneUrl());
-    audio.volume = 1;
-    audio.onended = () => {
-      URL.revokeObjectURL(audio.src);
-    };
-    audio.play().then(() => {
-      audioOutputStatus = `test tone sent (${audioContext ? audioContext.state : "media element"})`;
-      noteAudioPeak(0.35);
-      updateTransportStatus();
-    }).catch((e) => {
-      audioErrors += 1;
-      audioOutputStatus = `media test failed: ${e && e.message ? e.message : e}`;
-      updateTransportStatus();
-    });
+  function enableSelectedAudio() {
+    unlockAudio();
+    audioOutputStatus = `enabled selected stream audio (${audioContext ? audioContext.state : "pending"})`;
+    updateTransportStatus();
   }
 
   async function supportsOpusAudioDecoder() {
@@ -457,6 +396,19 @@
     audioDecoder = null;
   }
 
+  function resetAudioPlayback() {
+    resetAudioDecoder();
+    for (const src of activeAudioSources) {
+      try {
+        src.stop();
+      } catch {
+        // Source may already have ended.
+      }
+    }
+    activeAudioSources.clear();
+    audioNextTime = audioContext ? audioContext.currentTime + 0.02 : 0;
+  }
+
   function playAudioData(audioData) {
     if (!audioContext) {
       audioData.close();
@@ -514,6 +466,15 @@
     const src = audioContext.createBufferSource();
     src.buffer = buffer;
     src.connect(audioContext.destination);
+    activeAudioSources.add(src);
+    src.onended = () => {
+      activeAudioSources.delete(src);
+      try {
+        src.disconnect();
+      } catch {
+        // ignore disconnect races
+      }
+    };
     const now = audioContext.currentTime;
     if (audioNextTime < now + 0.02) audioNextTime = now + 0.02;
     src.start(audioNextTime);
@@ -568,6 +529,12 @@
   function decodeAudio(msg) {
     audioMessages += 1;
     if (!audioContext) return;
+    if (String(msg.codec || activeAudioEncoder).toLowerCase() !== activeAudioEncoder) {
+      audioErrors += 1;
+      audioOutputStatus = `ignored unexpected audio codec ${msg.codec || "unknown"}`;
+      updateTransportStatus();
+      return;
+    }
     if (activeAudioEncoder === "opus") {
       try {
         const packetRate = Number(msg.rate || activeAudioRate);
@@ -732,7 +699,7 @@
     });
     audioTestEl.addEventListener("click", (e) => {
       e.stopPropagation();
-      playTestTone();
+      enableSelectedAudio();
     });
     for (const el of [videoQualityEl, videoCodecEl, videoBitrateEl, audioEncoderEl, audioBitrateEl, audioQualityEl, inputMoveHzEl]) {
       el.addEventListener("change", () => {
@@ -819,9 +786,9 @@
           activeVideoCodec = msg.active.videoCodec || "H264";
           activeAudioEncoder = msg.active.audioEncoder || "opus";
           activeAudioRate = Number(msg.active.audioTransportRate || msg.active.audioQuality || 48000);
-          activeAudioBitrate = Number(msg.active.audioBitrate || 96000);
+          activeAudioBitrate = Number(msg.active.audioBitrate || 64000);
           moveInterval = 1000 / Number(msg.active.inputMoveHz || 125);
-          resetAudioDecoder();
+          resetAudioPlayback();
           if (activeAudioEncoder === "opus") ensureAudioDecoder();
         }
         activeTransport = msg.transport || null;
@@ -836,6 +803,7 @@
     ws.onclose = () => {
       connectionState = "reconnecting";
       configured = false;
+      resetAudioPlayback();
       setStatus("Disconnected — reconnecting…");
       scheduleReconnect();
     };

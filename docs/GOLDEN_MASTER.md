@@ -54,8 +54,9 @@ Transport:
 - Page: HTTPS from `ra2-stream-gateway.py`
 - Video/audio/control channel: WSS, same origin and same port
 - Video: H.264 by default, decoded by Chromium-family browser WebCodecs
-- Audio: Opus by default, with PCM as a fallback
+- Audio: Opus low-latency at `64000` bps by default, with PCM as a fallback
 - Input: browser events over WSS to `xdotool`
+- One active WSS stream session per player container; a newer browser tab replaces the previous session
 
 No WebRTC UDP media range is required for the golden path.
 
@@ -122,7 +123,7 @@ Current ultra defaults:
 - Bitrate: `900000`
 - Keyframe interval: `1` second
 - Audio codec: `opus`
-- Audio bitrate: `96000`
+- Audio bitrate: `64000` by default; selectable higher Opus rates remain available for testing.
 - Audio frame size: `10` ms
 - Audio source rate: `44100`
 - Audio transport rate: `48000`
@@ -131,6 +132,25 @@ Current ultra defaults:
 H.265 is not the default golden path. It is available as a test mode behind `ULTRA_H265_TEST_ENABLED=1`; Chromium WebCodecs requires the `hev1.1.6.L93.B0` codec string, and the current NAS uses VA-API `vah265enc` rather than QSV/MSDK factories. Keep H.264 as the default until H.265 has longer gameplay stability coverage. For H.265/QSV work, start with `video-diagnostics.log` under each player's log directory.
 
 Compare H.265 using lower target bitrates, not the same bitrate as H.264. The VA encoder is rate-controlled, so equal target bitrates produce similar bandwidth and may look visually identical on low-motion RA2 screens.
+
+## Audio And Stream Sessions
+
+The browser must play only the user-selected stream audio. There is no parallel local test tone, media-element tone, or second audio path in the ultra client.
+
+- Default transport menu: `opus` encoder, `64000` bps, `44100` Hz source, `48000` Hz Opus transport
+- The `Enable audio` button unlocks Web Audio for the selected stream; it does not inject generated tones
+- Reconnect and transport changes clear queued WebAudio buffers and reset the Opus decoder
+- Audio packets whose codec does not match the selected encoder are ignored
+
+Each player container allows one active stream helper at a time. If a second browser connects to the same player, the gateway stops the previous helper and closes the older WebSocket. This prevents duplicate Opus playback when multiple tabs or stale sessions are open.
+
+Expected live check:
+
+```bash
+docker exec ra2-player-1 sh -lc 'pgrep -cx stream-helper || true'
+```
+
+During normal play there should be `0` or `1` `stream-helper` process, never `2`.
 
 ## Diagnostics
 

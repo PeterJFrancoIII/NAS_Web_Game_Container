@@ -35,7 +35,7 @@ static void log_factory_status(const gchar *name) {
 
 static gchar *audio_encoder_desc(gint audio_rate) {
   const gchar *codec = env_str("ULTRA_AUDIO_CODEC", "opus");
-  gint bitrate = MAX(env_int("ULTRA_AUDIO_BITRATE", 96000), 1);
+  gint bitrate = MAX(env_int("ULTRA_AUDIO_BITRATE", 64000), 1);
   gint frame_ms = MAX(env_int("ULTRA_AUDIO_FRAME_MS", 10), 2);
   gint transport_rate = env_int("ULTRA_AUDIO_TRANSPORT_RATE", 48000);
 
@@ -192,7 +192,7 @@ static void emit_json_line(const gchar *type, gboolean keyframe, guint64 pts_ns,
   } else {
     printf("{\"type\":\"audio\",\"codec\":\"%s\",\"rate\":%d,\"bitrate\":%d,\"sourceRate\":%d,\"ts\":%llu,\"data\":\"%s\"}\n",
            env_str("ULTRA_AUDIO_CODEC", "opus"), audio_output_rate(),
-           env_int("ULTRA_AUDIO_BITRATE", 96000), env_int("ULTRA_AUDIO_RATE", 44100),
+           env_int("ULTRA_AUDIO_BITRATE", 64000), env_int("ULTRA_AUDIO_RATE", 44100),
            (unsigned long long)(pts_ns / 1000000ULL),
            encoded);
   }
