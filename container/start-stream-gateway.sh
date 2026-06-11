@@ -40,6 +40,10 @@ export ULTRA_AUDIO_BITRATE="${ULTRA_AUDIO_BITRATE:-96000}"
 export ULTRA_AUDIO_FRAME_MS="${ULTRA_AUDIO_FRAME_MS:-10}"
 export ULTRA_AUDIO_RATE="${ULTRA_AUDIO_RATE:-44100}"
 export ULTRA_AUDIO_TRANSPORT_RATE="${ULTRA_AUDIO_TRANSPORT_RATE:-48000}"
+export ULTRA_VIDEO_DIAGNOSTICS="${ULTRA_VIDEO_DIAGNOSTICS:-1}"
+if [ -n "${ULTRA_GST_DEBUG:-}" ]; then
+  export GST_DEBUG="$ULTRA_GST_DEBUG"
+fi
 
 TLS_CERT="${TLS_CERT:-/opt/ra2/tls/cert.pem}"
 TLS_KEY="${TLS_KEY:-/opt/ra2/tls/key.pem}"
@@ -84,5 +88,10 @@ printf '[ultra-gateway] codec=%s %sx%s@%sfps bitrate=%s require_hw=%s tls=%s log
   "$ULTRA_VIDEO_REQUIRE_HW" \
   "$ULTRA_GATEWAY_TLS" \
   "$DIAGNOSTIC_DIR" >&2
+
+if [ "$ULTRA_VIDEO_DIAGNOSTICS" = "1" ] && [ -x /opt/ra2/log-video-diagnostics.sh ]; then
+  ULTRA_VIDEO_DIAGNOSTICS_LOG="${ULTRA_VIDEO_DIAGNOSTICS_LOG:-${DIAGNOSTIC_DIR}/video-diagnostics.log}" \
+    /opt/ra2/log-video-diagnostics.sh || true
+fi
 
 exec /usr/bin/python3 /opt/ra2/ra2-stream-gateway.py >>"$GATEWAY_LOG" 2>&1

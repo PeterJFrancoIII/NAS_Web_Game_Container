@@ -53,6 +53,9 @@ ALLOWED_AUDIO_BITRATES = frozenset({64000, 96000, 128000})
 ALLOWED_INPUT_HZ = frozenset({60, 125, 200})
 ALLOWED_AUDIO_ENCODERS = frozenset({"opus", "pcm"})
 AVAILABLE_CACHE: dict = {}
+FACTORY_CACHE: dict[str, bool] = {}
+H265_QSV_FACTORIES = ("qsvh265enc", "msdkh265enc")
+H265_VA_FACTORIES = ("vah265enc", "vaapih265enc")
 
 KEYSYM_MAP = {
     "ArrowUp": "Up",
@@ -79,6 +82,8 @@ def _xdotool_key(key: object) -> str:
 
 
 def _gst_factory_exists(name: str) -> bool:
+    if name in FACTORY_CACHE:
+        return FACTORY_CACHE[name]
     try:
         result = subprocess.run(
             ["gst-inspect-1.0", name],
@@ -86,9 +91,36 @@ def _gst_factory_exists(name: str) -> bool:
             timeout=5,
             check=False,
         )
-        return result.returncode == 0
+        FACTORY_CACHE[name] = result.returncode == 0
+        return FACTORY_CACHE[name]
     except Exception:
+        FACTORY_CACHE[name] = False
         return False
+
+
+def _factory_status(names: tuple[str, ...]) -> dict[str, str]:
+    return {name: "present" if _gst_factory_exists(name) else "missing" for name in names}
+
+
+def _h265_unavailable_reason() -> str:
+    qsv = _factory_status(H265_QSV_FACTORIES)
+    va = _factory_status(H265_VA_FACTORIES)
+    present_qsv = [name for name, status in qsv.items() if status == "present"]
+    present_va = [name for name, status in va.items() if status == "present"]
+    if not present_qsv and not present_va:
+        return (
+            "H265 disabled; no QSV/VA HEVC encoder factory found "
+            f"(qsv={qsv}, va={va}); see video-diagnostics.log"
+        )
+    if not present_qsv:
+        return (
+            "H265 disabled for browser decode testing; VA HEVC exists but QSV HEVC is missing "
+            f"(qsv={qsv}, va={va}); see video-diagnostics.log"
+        )
+    return (
+        "H265 disabled for browser decode testing even though QSV HEVC is present "
+        f"(qsv={present_qsv}, va={present_va}); see video-diagnostics.log"
+    )
 
 
 def _video_codec_available(codec: str) -> bool:
@@ -142,7 +174,7 @@ def get_available_options() -> dict:
             video_codecs.append(codec)
         else:
             unavailable_video[codec] = (
-                "H265 currently produces a black browser stream"
+                _h265_unavailable_reason()
                 if codec == "H265"
                 else "hardware encoder not found on server"
             )
@@ -230,7 +262,7 @@ def validate_settings(requested: Optional[dict]) -> dict:
                 "field": "videoCodec",
                 "requested": "H265",
                 "active": "H264",
-                "reason": "H265 currently produces a black browser stream",
+                "reason": _h265_unavailable_reason(),
             }
         )
         codec = "H264"

@@ -12,6 +12,7 @@ x-ra2-ultra-env: &ra2-ultra-env
   ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}
   ULTRA_VIDEO_BITRATE: ${ULTRA_VIDEO_BITRATE:-900000}
   ULTRA_VIDEO_KEYFRAME_SECONDS: ${ULTRA_VIDEO_KEYFRAME_SECONDS:-1}
+  ULTRA_VIDEO_DIAGNOSTICS: ${ULTRA_VIDEO_DIAGNOSTICS:-1}
   ULTRA_AUDIO_CODEC: ${ULTRA_AUDIO_CODEC:-opus}
   ULTRA_AUDIO_BITRATE: ${ULTRA_AUDIO_BITRATE:-96000}
   ULTRA_AUDIO_FRAME_MS: ${ULTRA_AUDIO_FRAME_MS:-10}
@@ -55,6 +56,7 @@ x-ra2-ultra: &ra2-ultra
     - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
     - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
     - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
+    - ./container/log-video-diagnostics.sh:/opt/ra2/log-video-diagnostics.sh:ro
     - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
     - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
     - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro

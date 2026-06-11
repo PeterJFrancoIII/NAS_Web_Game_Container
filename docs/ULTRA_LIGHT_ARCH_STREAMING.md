@@ -72,6 +72,9 @@ PLAYER2_GAME_CPUSET=1
 ULTRA_VIDEO_FPS=24
 ULTRA_VIDEO_CODEC=H264
 ULTRA_VIDEO_BITRATE=900000
+ULTRA_VIDEO_DIAGNOSTICS=1
+# Optional while debugging H.265/QSV:
+# ULTRA_GST_DEBUG=qsv*:6,msdk*:6,va*:5,vah265enc:6,vaapih265enc:6
 ULTRA_GATEWAY_TLS=1
 ULTRA_AUDIO_CODEC=opus
 ULTRA_AUDIO_BITRATE=96000
@@ -80,6 +83,17 @@ ULTRA_AUDIO_TRANSPORT_RATE=48000
 ```
 
 H.265 is optional in the transport menu only when the NAS reports a hardware HEVC encoder **and** the browser accepts the codec. If unavailable, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+
+## H.265 / QSV diagnostics
+
+When `ULTRA_VIDEO_DIAGNOSTICS=1`, gateway startup writes:
+
+```text
+/volume2/Data/App_Development/ra2-lan-party/logs/player1/video-diagnostics.log
+/volume2/Data/App_Development/ra2-lan-party/logs/player2/video-diagnostics.log
+```
+
+The log captures `/dev/dri`, `vainfo`, GStreamer version, and factory inspection for QSV/MSDK and VA encoders including `qsvh265enc`, `msdkh265enc`, `vah265enc`, and `vaapih265enc`. Use this before changing the active stream codec; it shows whether H.265/QSV is blocked by missing plugins, missing hardware profiles, container device access, or later browser decode behavior.
 
 ## Verify
 

@@ -29,6 +29,10 @@ static gboolean factory_exists(const gchar *name) {
   return TRUE;
 }
 
+static void log_factory_status(const gchar *name) {
+  g_printerr("[stream-helper] factory %s=%s\n", name, factory_exists(name) ? "present" : "missing");
+}
+
 static gchar *audio_encoder_desc(gint audio_rate) {
   const gchar *codec = env_str("ULTRA_AUDIO_CODEC", "opus");
   gint bitrate = MAX(env_int("ULTRA_AUDIO_BITRATE", 96000), 1);
@@ -108,6 +112,13 @@ static gchar *video_encoder_desc(void) {
   }
 
   if (g_ascii_strcasecmp(codec, "H265") == 0 || g_ascii_strcasecmp(codec, "HEVC") == 0) {
+    log_factory_status("qsvh265enc");
+    log_factory_status("msdkh265enc");
+    log_factory_status("vah265enc");
+    log_factory_status("vaapih265enc");
+    if (factory_exists("qsvh265enc") || factory_exists("msdkh265enc")) {
+      g_printerr("[stream-helper] QSV/MSDK H.265 factory is present but the validated ultra pipeline still uses VA encoders until QSV caps are proven\n");
+    }
     if (factory_exists("vah265enc")) {
       g_printerr("[stream-helper] using hardware H.265 encoder vah265enc\n");
       return g_strdup_printf(
@@ -256,6 +267,9 @@ static void on_bus_message(GstBus *bus, GstMessage *message, gpointer user_data)
     gchar *debug = NULL;
     gst_message_parse_error(message, &err, &debug);
     g_printerr("[stream-helper] error: %s\n", err ? err->message : "unknown");
+    if (debug && *debug) {
+      g_printerr("[stream-helper] debug: %s\n", debug);
+    }
     g_clear_error(&err);
     g_free(debug);
     if (main_loop) {

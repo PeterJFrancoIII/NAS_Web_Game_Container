@@ -16,6 +16,7 @@ DIAGNOSTIC_DIR="${ULTRA_GAME_DIAGNOSTIC_DIR:-${LOG_ROOT}/player${PLAYER_ID:-unkn
 INPUT_TRACE="${ULTRA_INPUT_TRACE:-${DIAGNOSTIC_DIR}/input-events.log}"
 GATEWAY_LOG="${ULTRA_GATEWAY_LOG:-${DIAGNOSTIC_DIR}/gateway.log}"
 WINE_LOG="${ULTRA_WINE_LOG:-${DIAGNOSTIC_DIR}/wine-current.log}"
+VIDEO_DIAGNOSTICS_LOG="${ULTRA_VIDEO_DIAGNOSTICS_LOG:-${DIAGNOSTIC_DIR}/video-diagnostics.log}"
 WINE_DEBUG_CHANNELS="${ULTRA_WINEDEBUG:-err+all,+seh}"
 GAME_DIR="${ULTRA_GAME_WORK_DIR:-${DIAGNOSTIC_DIR}/game-work}"
 GAME_OUTPUT_FILES="except.txt except_yr.txt ddraw.log cnc-ddraw.log debug.txt"
@@ -121,6 +122,7 @@ dump_lockup_report() {
     find "$DIAGNOSTIC_DIR" -maxdepth 1 -type f \( -iname "*.mdmp" -o -iname "winedbg-minidump-*.log" \) \
       -printf "%TY-%Tm-%Td %TH:%TM:%TS %s %p\n" 2>/dev/null | sort | tail -n 20 || true
     dump_file_tail "gateway lifecycle log" "$GATEWAY_LOG" 200
+    dump_file_tail "video diagnostics" "$VIDEO_DIAGNOSTICS_LOG" 260
     dump_file_tail "Wine stderr/stdout" "$WINE_LOG" 260
     dump_file_tail "Wine minidump helper" "${DIAGNOSTIC_DIR}/latest-winedbg-minidump.log" 160
     dump_file_tail "recent input events" "$INPUT_TRACE" 300

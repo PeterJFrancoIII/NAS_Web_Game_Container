@@ -128,7 +128,7 @@ Current ultra defaults:
 - Audio transport rate: `48000`
 - TLS enabled: `ULTRA_GATEWAY_TLS=1`
 
-H.265 is not golden. It has shown black-screen behavior in the browser path and should stay disabled unless decode is revalidated end to end.
+H.265 is not golden. It has shown black-screen behavior in the browser path and should stay disabled unless decode is revalidated end to end. For H.265/QSV work, start with `video-diagnostics.log` under each player's log directory.
 
 ## Diagnostics
 
@@ -148,6 +148,7 @@ The launcher writes or collects:
 - `crash-<timestamp>-<reason>.log`
 - `input-events.log`
 - gateway lifecycle logs
+- `video-diagnostics.log` for `/dev/dri`, `vainfo`, GStreamer, QSV/MSDK, and VA encoder discovery
 - recent process state, memory, disk, X window, and Wine status
 - Wine minidump helper output when available
 
