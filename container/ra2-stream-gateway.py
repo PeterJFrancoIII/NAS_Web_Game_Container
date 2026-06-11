@@ -56,6 +56,11 @@ AVAILABLE_CACHE: dict = {}
 FACTORY_CACHE: dict[str, bool] = {}
 H265_QSV_FACTORIES = ("qsvh265enc", "msdkh265enc")
 H265_VA_FACTORIES = ("vah265enc", "vaapih265enc")
+H265_TEST_ENABLED = os.environ.get("ULTRA_H265_TEST_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 KEYSYM_MAP = {
     "ArrowUp": "Up",
@@ -112,13 +117,18 @@ def _h265_unavailable_reason() -> str:
             "H265 disabled; no QSV/VA HEVC encoder factory found "
             f"(qsv={qsv}, va={va}); see video-diagnostics.log"
         )
+    if not H265_TEST_ENABLED:
+        return (
+            "H265 test mode is disabled; set ULTRA_H265_TEST_ENABLED=1 to use the available "
+            f"HEVC encoders (qsv={qsv}, va={va}); see video-diagnostics.log"
+        )
     if not present_qsv:
         return (
-            "H265 disabled for browser decode testing; VA HEVC exists but QSV HEVC is missing "
+            "H265 enabled for testing with VA HEVC; QSV HEVC is missing "
             f"(qsv={qsv}, va={va}); see video-diagnostics.log"
         )
     return (
-        "H265 disabled for browser decode testing even though QSV HEVC is present "
+        "H265 enabled for testing with QSV/VA HEVC "
         f"(qsv={present_qsv}, va={present_va}); see video-diagnostics.log"
     )
 
@@ -132,9 +142,9 @@ def _video_codec_available(codec: str) -> bool:
             or _gst_factory_exists("x264enc")
         )
     if codec in {"H265", "HEVC"}:
-        # The current HEVC pipeline advertises an encoder but produces a black
-        # browser frame path, so keep it unavailable until decode is verified.
-        return False
+        if not H265_TEST_ENABLED:
+            return False
+        return any(_gst_factory_exists(factory) for factory in (*H265_QSV_FACTORIES, *H265_VA_FACTORIES))
     return False
 
 
@@ -256,7 +266,7 @@ def validate_settings(requested: Optional[dict]) -> dict:
         codec = "H265"
     if codec in {"AVC"}:
         codec = "H264"
-    if codec == "H265":
+    if codec == "H265" and not _video_codec_available("H265"):
         fallbacks.append(
             {
                 "field": "videoCodec",

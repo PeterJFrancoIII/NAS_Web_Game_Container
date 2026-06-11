@@ -73,6 +73,7 @@ ULTRA_VIDEO_FPS=24
 ULTRA_VIDEO_CODEC=H264
 ULTRA_VIDEO_BITRATE=900000
 ULTRA_VIDEO_DIAGNOSTICS=1
+ULTRA_H265_TEST_ENABLED=0
 # Optional while debugging H.265/QSV:
 # ULTRA_GST_DEBUG=qsv*:6,msdk*:6,va*:5,vah265enc:6,vaapih265enc:6
 ULTRA_GATEWAY_TLS=1
@@ -82,7 +83,9 @@ ULTRA_AUDIO_RATE=44100
 ULTRA_AUDIO_TRANSPORT_RATE=48000
 ```
 
-H.265 is optional in the transport menu only when the NAS reports a hardware HEVC encoder **and** the browser accepts the codec. If unavailable, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+H.265 is a test path. Set `ULTRA_H265_TEST_ENABLED=1` before trying it in the transport menu. If no HEVC encoder is available, or the flag is off, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+
+Current H.265 test result: Chromium WebCodecs renders the stream when the client uses `hev1.1.6.L93.B0`. The DS225+ stack does not expose QSV/MSDK GStreamer factories (`qsvh265enc` / `msdkh265enc`), but it does expose VA-API H.265 through `vah265enc` on Intel Gemini Lake.
 
 ## H.265 / QSV diagnostics
 

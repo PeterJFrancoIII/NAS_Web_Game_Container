@@ -200,7 +200,7 @@
   function videoCodecString(codec) {
     const upper = String(codec || "H264").toUpperCase();
     if (upper === "H265" || upper === "HEVC") {
-      return "hevc1.1.6.L93.B0";
+      return "hev1.1.6.L93.B0";
     }
     return "avc1.42E01F";
   }
@@ -472,25 +472,44 @@
     videoMessages += 1;
     const data = b64ToU8(msg.data);
     if (!configured && msg.key) {
-      videoDecoder.configure({
-        codec: videoCodecString(activeVideoCodec),
-        codedWidth: streamWidth,
-        codedHeight: streamHeight,
-        hardwareAcceleration: "prefer-hardware",
-        optimizeForLatency: true,
-      });
-      configured = true;
-      connectionState = "decoding";
+      try {
+        videoDecoder.configure({
+          codec: videoCodecString(activeVideoCodec),
+          codedWidth: streamWidth,
+          codedHeight: streamHeight,
+          hardwareAcceleration: "prefer-hardware",
+          optimizeForLatency: true,
+        });
+        configured = true;
+        connectionState = "decoding";
+      } catch (e) {
+        framesDropped += 1;
+        browserFallbacks.push({
+          field: "videoCodec",
+          requested: activeVideoCodec,
+          active: "none",
+          reason: `VideoDecoder configure failed: ${e.message || e}`,
+        });
+        console.error("video decoder configure", activeVideoCodec, e);
+        updateTransportStatus();
+        return;
+      }
     }
     if (!configured) return;
     decodeQueue += 1;
-    videoDecoder.decode(
-      new EncodedVideoChunk({
-        type: msg.key ? "key" : "delta",
-        timestamp: msg.ts * 1000,
-        data,
-      })
-    );
+    try {
+      videoDecoder.decode(
+        new EncodedVideoChunk({
+          type: msg.key ? "key" : "delta",
+          timestamp: msg.ts * 1000,
+          data,
+        })
+      );
+    } catch (e) {
+      framesDropped += 1;
+      console.error("video decoder decode", activeVideoCodec, e);
+      updateTransportStatus([`video decode error: ${e.message || e}`]);
+    }
   }
 
   function decodeAudio(msg) {
