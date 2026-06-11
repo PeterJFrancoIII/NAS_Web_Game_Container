@@ -11,6 +11,10 @@
     audioBitrate: "96000",
     inputMoveHz: "125",
   };
+  const VIDEO_DECODER_CODECS = {
+    H264: ["avc1.42E01F"],
+    H265: ["hev1.1.6.L93.B0", "hvc1.1.6.L93.B0"],
+  };
 
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d", { alpha: false });
@@ -63,6 +67,7 @@
   let serverAvailable = null;
   let serverFallbacks = [];
   let browserFallbacks = [];
+  let activeVideoDecoderCodec = VIDEO_DECODER_CODECS.H264[0];
   let audioOutputStatus = "not initialized";
   let audioPeak = 0;
   let lastAudioAt = 0;
@@ -163,6 +168,7 @@
       lines.push("pending: changes apply on reconnect");
     }
     lines.push(
+      `decoder: ${activeVideoDecoderCodec}`,
       `video: ${streamWidth}x${streamHeight}`,
       `rx: v=${videoMessages} a=${audioMessages}`,
       `audio: state=${audioContext ? audioContext.state : "none"} played=${audioPlayed} err=${audioErrors}`,
@@ -200,7 +206,7 @@
   function videoCodecString(codec) {
     const upper = String(codec || "H264").toUpperCase();
     if (upper === "H265" || upper === "HEVC") {
-      return "hev1.1.6.L93.B0";
+      return activeVideoDecoderCodec;
     }
     return "avc1.42E01F";
   }
@@ -338,9 +344,50 @@
     }
   }
 
+  async function supportedVideoDecoderCodec(codec) {
+    if (!("VideoDecoder" in window) || typeof VideoDecoder.isConfigSupported !== "function") {
+      return null;
+    }
+    const upper = String(codec || "H264").toUpperCase();
+    const candidates = VIDEO_DECODER_CODECS[upper] || VIDEO_DECODER_CODECS.H264;
+    for (const candidate of candidates) {
+      try {
+        const result = await VideoDecoder.isConfigSupported({
+          codec: candidate,
+          codedWidth: streamWidth,
+          codedHeight: streamHeight,
+          hardwareAcceleration: "prefer-hardware",
+        });
+        if (result && result.supported) {
+          return candidate;
+        }
+      } catch {
+        // Try the next browser-specific codec string.
+      }
+    }
+    return null;
+  }
+
   async function browserCompatibleSettings(settings) {
     browserFallbacks = [];
     const compatible = { ...settings };
+    const requestedVideo = String(compatible.videoCodec || "H264").toUpperCase();
+    const videoDecoderCodec = await supportedVideoDecoderCodec(requestedVideo);
+    if (videoDecoderCodec) {
+      activeVideoDecoderCodec = videoDecoderCodec;
+    } else if (requestedVideo !== "H264") {
+      const h264DecoderCodec = await supportedVideoDecoderCodec("H264");
+      if (h264DecoderCodec) {
+        compatible.videoCodec = "H264";
+        activeVideoDecoderCodec = h264DecoderCodec;
+        browserFallbacks.push({
+          field: "videoCodec",
+          requested: requestedVideo,
+          active: "H264",
+          reason: "HEVC VideoDecoder unsupported in this browser",
+        });
+      }
+    }
     if (compatible.audioEncoder === "opus" && !(await supportsOpusAudioDecoder())) {
       compatible.audioEncoder = "pcm";
       browserFallbacks.push({
