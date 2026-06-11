@@ -89,9 +89,9 @@ printf '[ultra-gateway] codec=%s %sx%s@%sfps bitrate=%s require_hw=%s tls=%s log
   "$ULTRA_GATEWAY_TLS" \
   "$DIAGNOSTIC_DIR" >&2
 
-if [ "$ULTRA_VIDEO_DIAGNOSTICS" = "1" ] && [ -x /opt/ra2/log-video-diagnostics.sh ]; then
+if [ "$ULTRA_VIDEO_DIAGNOSTICS" = "1" ] && [ -f /opt/ra2/log-video-diagnostics.sh ]; then
   ULTRA_VIDEO_DIAGNOSTICS_LOG="${ULTRA_VIDEO_DIAGNOSTICS_LOG:-${DIAGNOSTIC_DIR}/video-diagnostics.log}" \
-    /opt/ra2/log-video-diagnostics.sh || true
+    /bin/sh /opt/ra2/log-video-diagnostics.sh || true
 fi
 
 exec /usr/bin/python3 /opt/ra2/ra2-stream-gateway.py >>"$GATEWAY_LOG" 2>&1
