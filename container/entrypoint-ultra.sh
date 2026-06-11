@@ -90,11 +90,9 @@ configure_serial() {
   fi
 }
 
-configure_app_compat() {
+clear_legacy_app_compat() {
   exe="$1"
-  version="${RA2_WINE_APP_VERSION:-win98}"
-  wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\${exe}" /v Version /t REG_SZ /d "$version" /f >/dev/null 2>&1 || \
-    log "Warning: failed to set Wine version for $exe"
+  wine reg delete "HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\${exe}" /f >/dev/null 2>&1 || true
 }
 
 if wine_prefix_ready; then
@@ -102,10 +100,10 @@ if wine_prefix_ready; then
   wine reg add "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug" /v Debugger /t REG_SZ /d "/bin/sh /opt/ra2/winedbg-minidump.sh %ld %ld" /f >/dev/null 2>&1 || true
   wine reg add "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug" /v Auto /t REG_SZ /d 1 /f >/dev/null 2>&1 || true
   wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f >/dev/null 2>&1 || true
-  configure_app_compat "RA2MD.exe"
-  configure_app_compat "gamemd.exe"
-  configure_app_compat "RA2.exe"
-  configure_app_compat "game.exe"
+  clear_legacy_app_compat "RA2MD.exe"
+  clear_legacy_app_compat "gamemd.exe"
+  clear_legacy_app_compat "RA2.exe"
+  clear_legacy_app_compat "game.exe"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Red Alert 2"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\Westwood\\Red Alert 2"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Yuri's Revenge"

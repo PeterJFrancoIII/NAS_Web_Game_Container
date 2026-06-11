@@ -10,6 +10,8 @@ ASSETS_DIR="${ASSETS_DIR:-$PROJECT_ROOT/assets}"
 
 cd "$COMPOSE_DIR"
 GAME_EXE="$(read_env_value GAME_EXE RA2MD.exe .env)"
+PREFIX1_DIR="$(read_env_value PREFIX1_DIR "$PROJECT_ROOT/prefixes/player1-win32" .env)"
+PREFIX2_DIR="$(read_env_value PREFIX2_DIR "$PROJECT_ROOT/prefixes/player2-win32" .env)"
 
 pass=0
 warn=0
@@ -33,7 +35,7 @@ bad() {
 printf 'RA2 LAN party preflight\n'
 printf 'Project root: %s\n\n' "$PROJECT_ROOT"
 
-for dir in "$PROJECT_ROOT" "$COMPOSE_DIR" "$ASSETS_DIR" "$PROJECT_ROOT/prefixes/player1" "$PROJECT_ROOT/prefixes/player2"; do
+for dir in "$PROJECT_ROOT" "$COMPOSE_DIR" "$ASSETS_DIR" "$PREFIX1_DIR" "$PREFIX2_DIR"; do
   if [ -d "$dir" ]; then
     ok "Directory exists: $dir"
   else

@@ -34,9 +34,9 @@ x-ra2-ultra: &ra2-ultra
     dockerfile: container/Dockerfile.ultra
     args:
       WINE_BUILD: ${WINE_BUILD:-10.8}
-      WINE_VARIANT: ${WINE_VARIANT:-amd64-wow64}
-      WINE_ARCH: ${WINE_ARCH:-win64}
-      WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-0}
+      WINE_VARIANT: ${WINE_VARIANT:-amd64}
+      WINE_ARCH: ${WINE_ARCH:-win32}
+      WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-1}
   devices:
     - ${DRI_DEVICE:-/dev/dri}:/dev/dri
   group_add:

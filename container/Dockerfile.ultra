@@ -1,7 +1,7 @@
 FROM archlinux:latest AS builder
 
 ARG WINE_BUILD=10.8
-ARG WINE_VARIANT=amd64-wow64
+ARG WINE_VARIANT=amd64
 
 RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
     && pacman -Syu --noconfirm \
@@ -23,9 +23,9 @@ RUN pacman -S --needed --noconfirm \
 FROM archlinux:latest
 
 ARG WINE_BUILD=10.8
-ARG WINE_VARIANT=amd64-wow64
-ARG WINE_ARCH=win64
-ARG WINE_ENABLE_MULTILIB=0
+ARG WINE_VARIANT=amd64
+ARG WINE_ARCH=win32
+ARG WINE_ENABLE_MULTILIB=1
 
 COPY --from=builder /opt/wine /opt/wine
 COPY --from=builder /src/stream-helper /opt/ra2/stream-helper

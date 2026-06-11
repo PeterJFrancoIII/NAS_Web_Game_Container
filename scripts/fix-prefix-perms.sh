@@ -8,8 +8,8 @@ PROJECT_ROOT="${PROJECT_ROOT:-/volume2/Data/App_Development/ra2-lan-party}"
 CONTAINER_UID="${CONTAINER_UID:-1000}"
 CONTAINER_GID="${CONTAINER_GID:-1000}"
 
-PREFIX1="$PROJECT_ROOT/prefixes/player1"
-PREFIX2="$PROJECT_ROOT/prefixes/player2"
+PREFIX1="${PREFIX1_DIR:-$PROJECT_ROOT/prefixes/player1-win32}"
+PREFIX2="${PREFIX2_DIR:-$PROJECT_ROOT/prefixes/player2-win32}"
 LOGS="$PROJECT_ROOT/logs"
 
 mkdir -p "$PREFIX1/rmcache" "$PREFIX2/rmcache" "$LOGS"

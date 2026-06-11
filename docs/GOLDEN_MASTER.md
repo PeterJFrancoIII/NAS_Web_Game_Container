@@ -107,9 +107,9 @@ RA2/Yuri's Revenge is a 32-bit Windows game. A 64-bit host package can still be 
 
 ## Compatibility Settings
 
-At the time this descriptor was written, the prefix setup still applies Wine app-default version overrides for RA2 executables through `RA2_WINE_APP_VERSION`, defaulting to `win98`.
+The prefix setup does not apply Windows 98 compatibility mode or any other Wine app-default Windows-version override for RA2 executables.
 
-Observed stability evidence suggests CPU pinning plus the `win32` prefix are the important fixes. Win98 compatibility mode alone did not fix crashes. It is a cleanup candidate, but remove it only after this descriptor has been committed and pushed, and verify both players again afterward.
+Observed stability evidence suggests CPU pinning plus the `win32` prefix are the important fixes. Win98 compatibility mode alone did not fix crashes and is not part of the golden master. Existing prefixes should have legacy `HKEY_CURRENT_USER\Software\Wine\AppDefaults\RA2*.exe` and `gamemd.exe` overrides removed during startup.
 
 ## Streaming Defaults
 
@@ -230,8 +230,6 @@ When optimizing, change one high-risk variable at a time and keep the golden-mas
 
 These are not part of the golden-master proof and may be simplified after the descriptor is saved:
 
-- remove Wine Win98 app-default compatibility mode and retest
-- document `PLAYERn_GAME_CPUSET` in `.env.example`
 - tighten minidump behavior if Wine attach timing can be improved
 - prune obsolete experimental browser paths only after confirming they are not needed as fallbacks
 

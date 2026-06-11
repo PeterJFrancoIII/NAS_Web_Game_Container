@@ -75,7 +75,7 @@ services:
       - "${PLAYER1_HTTP_PORT:-6081}:6080/tcp"
     volumes:
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
-      - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1}:/home/commander/.wine:rw
+      - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1-win32}:/home/commander/.wine:rw
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
       - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
@@ -125,7 +125,7 @@ services:
       - "${PLAYER2_HTTP_PORT:-6082}:6080/tcp"
     volumes:
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
-      - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2}:/home/commander/.wine:rw
+      - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2-win32}:/home/commander/.wine:rw
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
       - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro

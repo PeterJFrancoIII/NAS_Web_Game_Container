@@ -64,6 +64,11 @@ The gateway returns `hello.available`, `ready.active`, `ready.requested`, and `r
 Tune in `.env`:
 
 ```bash
+WINE_VARIANT=amd64
+WINE_ARCH=win32
+WINE_ENABLE_MULTILIB=1
+PLAYER1_GAME_CPUSET=0
+PLAYER2_GAME_CPUSET=1
 ULTRA_VIDEO_FPS=24
 ULTRA_VIDEO_CODEC=H264
 ULTRA_VIDEO_BITRATE=900000

@@ -581,8 +581,8 @@ class NasPreflightCheckpointUnitTest(unittest.TestCase):
             prefixes = root / "prefixes"
             project.mkdir(parents=True)
             assets.mkdir()
-            (prefixes / "player1").mkdir(parents=True)
-            (prefixes / "player2").mkdir(parents=True)
+            (prefixes / "player1-win32").mkdir(parents=True)
+            (prefixes / "player2-win32").mkdir(parents=True)
 
             for filename in ["compose.yaml", "compose.https.yaml"]:
                 (project / filename).write_text("services: {}\n", encoding="utf-8")

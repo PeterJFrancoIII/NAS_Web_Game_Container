@@ -8,10 +8,10 @@ CONTAINER_GID="${CONTAINER_GID:-1000}"
 
 mkdir -p \
   "$PROJECT_ROOT/assets" \
-  "$PROJECT_ROOT/prefixes/player1" \
-  "$PROJECT_ROOT/prefixes/player1/rmcache" \
-  "$PROJECT_ROOT/prefixes/player2" \
-  "$PROJECT_ROOT/prefixes/player2/rmcache" \
+  "$PROJECT_ROOT/prefixes/player1-win32" \
+  "$PROJECT_ROOT/prefixes/player1-win32/rmcache" \
+  "$PROJECT_ROOT/prefixes/player2-win32" \
+  "$PROJECT_ROOT/prefixes/player2-win32/rmcache" \
   "$PROJECT_ROOT/project" \
   "$PROJECT_ROOT/tls" \
   "$PROJECT_ROOT/logs"
@@ -25,8 +25,8 @@ cat <<EOF
 Prepared RA2 LAN party directories:
 
   $PROJECT_ROOT/assets
-  $PROJECT_ROOT/prefixes/player1
-  $PROJECT_ROOT/prefixes/player2
+  $PROJECT_ROOT/prefixes/player1-win32
+  $PROJECT_ROOT/prefixes/player2-win32
   $PROJECT_ROOT/project
   $PROJECT_ROOT/logs
 

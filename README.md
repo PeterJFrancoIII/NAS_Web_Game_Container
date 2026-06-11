@@ -2,6 +2,8 @@
 
 This project prepares a Synology DS225+ to host two Red Alert 2 / Yuri's Revenge game instances in lightweight Arch Linux Docker containers. Each player connects over the network while the game instances see each other on a static private Docker LAN.
 
+**Golden master:** read `docs/GOLDEN_MASTER.md` before changing the ultra streaming runtime, Wine architecture, input forwarding, or CPU affinity.
+
 ## Streaming architecture
 
 | Path | Role | Client |

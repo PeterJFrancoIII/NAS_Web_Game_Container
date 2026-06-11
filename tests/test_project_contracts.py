@@ -31,9 +31,14 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
 
         self.assertEqual(values["PROJECT_ROOT"], "/volume2/Data/App_Development/ra2-lan-party")
         self.assertEqual(values["ASSETS_DIR"], "/volume2/Data/App_Development/ra2-lan-party/assets")
-        self.assertEqual(values["PREFIX1_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player1")
-        self.assertEqual(values["PREFIX2_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player2")
+        self.assertEqual(values["PREFIX1_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player1-win32")
+        self.assertEqual(values["PREFIX2_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player2-win32")
         self.assertEqual(values["LOGS_DIR"], "/volume2/Data/App_Development/ra2-lan-party/logs")
+        self.assertEqual(values["WINE_VARIANT"], "amd64")
+        self.assertEqual(values["WINE_ARCH"], "win32")
+        self.assertEqual(values["WINE_ENABLE_MULTILIB"], "1")
+        self.assertEqual(values["PLAYER1_GAME_CPUSET"], "0")
+        self.assertEqual(values["PLAYER2_GAME_CPUSET"], "1")
 
     def test_project_specific_nas_paths_stay_inside_ra2_project_root(self):
         forbidden_parent = "/" + "Data" + "/" + "App_Development"
@@ -178,8 +183,8 @@ class ComposeTopologyContractTest(unittest.TestCase):
         compose = read("compose.yaml")
 
         self.assertIn("/home/commander/game_assets:ro", compose)
-        self.assertIn("/prefixes/player1}:/home/commander/.wine:rw", compose)
-        self.assertIn("/prefixes/player2}:/home/commander/.wine:rw", compose)
+        self.assertIn("/prefixes/player1-win32}:/home/commander/.wine:rw", compose)
+        self.assertIn("/prefixes/player2-win32}:/home/commander/.wine:rw", compose)
         self.assertNotIn("/home/commander/.wine/drive_c/RA2:ro", compose)
         self.assertNotIn("/rmcache:/home/commander/.wine/drive_c/RA2/rmcache:rw", compose)
         self.assertIn("./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro", compose)
@@ -837,8 +842,8 @@ class NasPreparationContractTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             for relative in [
                 "assets",
-                "prefixes/player1",
-                "prefixes/player2",
+                "prefixes/player1-win32",
+                "prefixes/player2-win32",
                 "project",
                 "tls",
                 "logs",
@@ -985,21 +990,23 @@ class UltraStreamingContractTest(unittest.TestCase):
 
         self.assertIn("ra2-lan-party:ultra", compose)
         self.assertIn("container/Dockerfile.ultra", compose)
-        self.assertIn("WINE_VARIANT: ${WINE_VARIANT:-amd64-wow64}", compose)
-        self.assertIn("WINE_ARCH: ${WINE_ARCH:-win64}", compose)
-        self.assertIn("WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-0}", compose)
-        self.assertIn("ARG WINE_ARCH=win64", dockerfile)
-        self.assertIn("ARG WINE_ENABLE_MULTILIB=0", dockerfile)
+        self.assertIn("WINE_VARIANT: ${WINE_VARIANT:-amd64}", compose)
+        self.assertIn("WINE_ARCH: ${WINE_ARCH:-win32}", compose)
+        self.assertIn("WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-1}", compose)
+        self.assertIn("ARG WINE_VARIANT=amd64", dockerfile)
+        self.assertIn("ARG WINE_ARCH=win32", dockerfile)
+        self.assertIn("ARG WINE_ENABLE_MULTILIB=1", dockerfile)
         self.assertIn("WINEARCH=${WINE_ARCH}", dockerfile)
         self.assertIn("[multilib]", dockerfile)
         self.assertIn("lib32-alsa-lib", dockerfile)
         self.assertIn('WINE_ARCH="${WINEARCH:-win64}"', entrypoint)
         self.assertIn('if [ "$WINE_ARCH" = "win32" ]; then', entrypoint)
         self.assertIn('[ ! -f "${WINEPREFIX}/drive_c/windows/syswow64/kernel32.dll" ]', entrypoint)
-        self.assertIn("configure_app_compat", entrypoint)
-        self.assertIn("RA2_WINE_APP_VERSION:-win98", entrypoint)
+        self.assertIn("clear_legacy_app_compat", entrypoint)
         self.assertIn("AppDefaults\\\\${exe}", entrypoint)
-        self.assertIn('configure_app_compat "gamemd.exe"', entrypoint)
+        self.assertIn('clear_legacy_app_compat "gamemd.exe"', entrypoint)
+        self.assertNotIn("RA2_WINE_APP_VERSION", entrypoint)
+        self.assertNotIn("win98", entrypoint)
         self.assertIn("x-ra2-ultra-env", compose)
         self.assertIn("ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}", compose)
         self.assertIn("ULTRA_VIDEO_CODEC: ${ULTRA_VIDEO_CODEC:-H264}", compose)
