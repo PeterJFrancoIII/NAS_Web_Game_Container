@@ -1,0 +1,14 @@
+# Optional /dev/uinput passthrough — enable only after uinput.ko is loaded on DSM.
+# Launch: RA2_COMPOSE_WEBRTC=1 RA2_COMPOSE_WEBRTC_UINPUT=1 ... -f compose.webrtc-uinput.yaml
+
+x-ra2-webrtc-uinput: &ra2-webrtc-uinput
+  devices:
+    - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+    - ${UINPUT_DEVICE:-/dev/uinput}:/dev/uinput
+
+services:
+  ra2-player-1:
+    <<: *ra2-webrtc-uinput
+
+  ra2-player-2:
+    <<: *ra2-webrtc-uinput

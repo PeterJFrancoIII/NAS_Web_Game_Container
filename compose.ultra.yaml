@@ -1,0 +1,75 @@
+# Ultra-light Arch browser streaming overlay.
+# Launch: RA2_COMPOSE_ULTRA=1 docker compose --env-file .env -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml up -d
+
+x-ra2-ultra-env: &ra2-ultra-env
+  ULTRA_STREAM_ENABLED: "1"
+  ULTRA_GATEWAY_PORT: "6080"
+  ULTRA_GATEWAY_TLS: ${ULTRA_GATEWAY_TLS:-1}
+  ULTRA_VIDEO_CODEC: ${ULTRA_VIDEO_CODEC:-H264}
+  ULTRA_VIDEO_REQUIRE_HW: ${ULTRA_VIDEO_REQUIRE_HW:-1}
+  ULTRA_VIDEO_WIDTH: ${ULTRA_VIDEO_WIDTH:-1024}
+  ULTRA_VIDEO_HEIGHT: ${ULTRA_VIDEO_HEIGHT:-768}
+  ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}
+  ULTRA_VIDEO_BITRATE: ${ULTRA_VIDEO_BITRATE:-900000}
+  ULTRA_VIDEO_KEYFRAME_SECONDS: ${ULTRA_VIDEO_KEYFRAME_SECONDS:-1}
+  ULTRA_AUDIO_CODEC: ${ULTRA_AUDIO_CODEC:-opus}
+  ULTRA_AUDIO_BITRATE: ${ULTRA_AUDIO_BITRATE:-96000}
+  ULTRA_AUDIO_FRAME_MS: ${ULTRA_AUDIO_FRAME_MS:-10}
+  ULTRA_AUDIO_RATE: ${ULTRA_AUDIO_RATE:-44100}
+  ULTRA_AUDIO_TRANSPORT_RATE: ${ULTRA_AUDIO_TRANSPORT_RATE:-48000}
+  LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}
+  GST_VAAPI_ALL_DRIVERS: "1"
+  GST_VA_ALL_DRIVERS: "1"
+  RA2_ENABLE_NOVNC_FALLBACK: "0"
+  RA2_ENABLE_AUDIO_PROXY: "0"
+  RA2_ENABLE_LATENCY_PROXY: "0"
+  WEBRTC_ENABLED: "0"
+  ULTRA_GAME_LOG_ROOT: /home/commander/ra2-logs-root
+  ULTRA_GAME_HOST_LOG_DIR: ${LOGS_DIR:-/volume2/Data/App_Development/ra2-lan-party/logs}
+
+x-ra2-ultra: &ra2-ultra
+  image: ra2-lan-party:ultra
+  build:
+    context: .
+    dockerfile: container/Dockerfile.ultra
+    args:
+      WINE_BUILD: ${WINE_BUILD:-10.8}
+      WINE_VARIANT: ${WINE_VARIANT:-amd64-wow64}
+      WINE_ARCH: ${WINE_ARCH:-win64}
+      WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-0}
+  devices:
+    - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+  group_add:
+    - "${RENDER_GID:-937}"
+    - "${VIDEO_GID:-44}"
+  environment:
+    <<: *ra2-ultra-env
+  healthcheck:
+    test: ["CMD-SHELL", "/bin/sh /opt/ra2/healthcheck-ultra.sh || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 300s
+  volumes:
+    - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
+    - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
+    - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+    - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
+    - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
+    - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
+    - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro
+    - ./container/remote-ultra:/opt/ra2/remote-ultra:ro
+    - ${LOGS_DIR:-/volume2/Data/App_Development/ra2-lan-party/logs}:/home/commander/ra2-logs-root:rw
+
+services:
+  ra2-player-1:
+    <<: *ra2-ultra
+    environment:
+      <<: *ra2-ultra-env
+      RA2_GAME_CPUSET: ${PLAYER1_GAME_CPUSET:-0}
+
+  ra2-player-2:
+    <<: *ra2-ultra
+    environment:
+      <<: *ra2-ultra-env
+      RA2_GAME_CPUSET: ${PLAYER2_GAME_CPUSET:-1}

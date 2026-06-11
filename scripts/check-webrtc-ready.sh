@@ -69,7 +69,10 @@ done
 
 if [ "$FAIL" -ne 0 ]; then
   printf '\nWebRTC readiness check failed.\n'
+  printf 'Run scripts/check-webrtc-ice-reachability.sh after a browser connects for media port diagnostics.\n'
   exit 1
 fi
 
 printf '\nWebRTC readiness check passed.\n'
+printf 'Note: WebRTC is legacy fallback — primary path is Moonlight (docs/MOONLIGHT_EXPERIMENT.md).\n'
+printf 'Run scripts/check-webrtc-ice-reachability.sh to verify ICE/media port reachability.\n'

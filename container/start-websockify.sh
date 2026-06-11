@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ "${RA2_ENABLE_NOVNC_FALLBACK:-1}" = "0" ]; then
+  printf '[websockify] disabled (RA2_ENABLE_NOVNC_FALLBACK=0)\n' >&2
+  exit 0
+fi
+
 WEB_ROOT="/opt/novnc"
 TOKEN_CFG="/opt/ra2/websockify-tokens.cfg"
 RUNNER="/opt/novnc/utils/websockify/run"

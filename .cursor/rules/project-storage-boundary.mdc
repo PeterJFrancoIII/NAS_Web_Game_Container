@@ -1,0 +1,22 @@
+---
+description: Keep Red Alert 2 NAS project files inside the project root
+alwaysApply: true
+---
+
+# Project Storage Boundary
+
+All files specific to this Red Alert 2 NAS project must stay under:
+
+`/volume2/Data/App_Development/ra2-lan-party`
+
+Do not create, mount, sync, log, cache, or document project-specific files directly under `/volume2/Data/App_Development` or any other NAS location.
+
+Use project subdirectories such as:
+
+- `/volume2/Data/App_Development/ra2-lan-party/project`
+- `/volume2/Data/App_Development/ra2-lan-party/assets`
+- `/volume2/Data/App_Development/ra2-lan-party/prefixes`
+- `/volume2/Data/App_Development/ra2-lan-party/logs`
+- `/volume2/Data/App_Development/ra2-lan-party/tls`
+
+The only exception is truly shared tooling or dependencies intended for multiple projects, such as a shared Python package or cross-project dependency. Those may live under `/volume2/Data/App_Development` when they are not RA2-project-specific.

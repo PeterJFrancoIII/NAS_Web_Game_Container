@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-HOST="${NAS_HOST:-MediaServer2Local}"
+HOST="${NAS_HOST:-MediaServer2}"
 TARGET="${NAS_TARGET:-/volume2/Data/App_Development/ra2-lan-party/project}"
 SOURCE="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 
@@ -19,3 +19,9 @@ COPYFILE_DISABLE=1 tar czf - \
 ssh "$HOST" "find '$TARGET' -name '._*' -delete 2>/dev/null || true; chmod +x '$TARGET'/scripts/*.sh '$TARGET'/container/entrypoint.sh 2>/dev/null || true"
 
 echo "Sync complete."
+echo ""
+echo "Note: bind-mounted container files (webrtc-media.py, remote-play.js, etc.)"
+echo "are refreshed on the next 'docker compose up -d --force-recreate'."
+echo "For a full WebRTC redeploy with verification, run:"
+echo "  NAS_HOST=${HOST} sh scripts/redeploy-webrtc.sh"
+echo "  NAS_HOST=${HOST} sh scripts/redeploy-low-memory.sh"

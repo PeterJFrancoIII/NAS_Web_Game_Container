@@ -5,5 +5,6 @@ load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse/nativ
 
 load-module module-null-sink sink_name=game sink_properties=device.description=RA2_Game_Audio
 set-default-sink game
+set-default-source game.monitor
 
 load-module module-simple-protocol-tcp listen=127.0.0.1 port=4711 format=s16le channels=2 rate=44100 record=true playback=false

@@ -1,0 +1,25 @@
+# UDP WebRTC test overlay — enables UDP ICE while keeping TCP as fallback.
+# Launch:
+#   RA2_COMPOSE_WEBRTC=1 docker compose --env-file .env \
+#     -f compose.yaml -f compose.https.yaml -f compose.webrtc.yaml -f compose.webrtc-udp.yaml up -d --no-build --force-recreate
+#
+# For best results on Synology, also enable macvlan:
+#   RA2_COMPOSE_WEBRTC_HOST=1 ... -f compose.webrtc-host.yaml ...
+
+x-ra2-webrtc-udp: &ra2-webrtc-udp
+  environment:
+    WEBRTC_ICE_UDP: "1"
+    WEBRTC_ICE_TCP: "1"
+
+services:
+  ra2-player-1:
+    <<: *ra2-webrtc-udp
+    environment:
+      WEBRTC_ICE_UDP: "1"
+      WEBRTC_ICE_TCP: "1"
+
+  ra2-player-2:
+    <<: *ra2-webrtc-udp
+    environment:
+      WEBRTC_ICE_UDP: "1"
+      WEBRTC_ICE_TCP: "1"

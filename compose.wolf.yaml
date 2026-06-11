@@ -1,0 +1,34 @@
+# Profile 1 (primary): Games on Whales Wolf — Moonlight-compatible RTSP/UDP streaming.
+# Runs BESIDE ra2-player-1/2. See docs/CONSOLIDATED_ARCHITECTURE.md
+#
+# Launch:
+#   RA2_COMPOSE_WOLF=1 sh scripts/redeploy-moonlight-poc.sh wolf
+#   RA2_COMPOSE_MOONLIGHT_UINPUT=1  # after /dev/uinput is loaded
+
+services:
+  ra2-wolf-experiment:
+    image: ghcr.io/games-on-whales/wolf:stable
+    container_name: ra2-wolf-experiment
+    network_mode: host
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      TZ: ${TZ:-America/New_York}
+      WOLF_RENDER_NODE: ${WOLF_RENDER_NODE:-/dev/dri/renderD128}
+      LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}
+      INTEL_DEBUG: ${INTEL_DEBUG:-norbc}
+      MESA_LOADER_DRIVER_OVERRIDE: ${MESA_LOADER_DRIVER_OVERRIDE:-zink}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /run/udev:/run/udev:rw
+      - ${WOLF_CONFIG_DIR:-./data/wolf-experiment/config}:/etc/wolf:rw
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+    device_cgroup_rules:
+      - "c 13:* rmw"
+      - "c 226:* rmw"
+    group_add:
+      - "${RENDER_GID:-937}"
+      - "${VIDEO_GID:-44}"
+    shm_size: "1gb"
+    restart: unless-stopped

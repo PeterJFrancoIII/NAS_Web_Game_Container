@@ -149,7 +149,7 @@ class TlsCheckpointUnitTest(unittest.TestCase):
                 docker_log.read_text(encoding="utf-8"),
             )
 
-    def test_run_compose_adds_transcode_overlay_by_default(self):
+    def test_run_compose_adds_transcode_overlay_only_when_enabled(self):
         with temp_workspace() as temp_dir:
             root = Path(temp_dir)
             tls_dir = root / "tls"
@@ -181,16 +181,16 @@ class TlsCheckpointUnitTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("compose.transcode.yaml", docker_log.read_text(encoding="utf-8"))
+            self.assertNotIn("compose.transcode.yaml", docker_log.read_text(encoding="utf-8"))
 
             docker_log.write_text("", encoding="utf-8")
-            result_opt_out = run_script(
+            result_opt_in = run_script(
                 f'. "{PROJECT_ROOT / "scripts/lib.sh"}"; run_compose "{env_file}" ps',
                 cwd=root,
-                env={"DOCKER": str(fake_docker), "RA2_COMPOSE_TRANSCODE": "0"},
+                env={"DOCKER": str(fake_docker), "RA2_COMPOSE_TRANSCODE": "1"},
             )
-            self.assertEqual(result_opt_out.returncode, 0, result_opt_out.stderr)
-            self.assertNotIn(
+            self.assertEqual(result_opt_in.returncode, 0, result_opt_in.stderr)
+            self.assertIn(
                 "compose.transcode.yaml",
                 docker_log.read_text(encoding="utf-8"),
             )
@@ -231,6 +231,34 @@ class TlsCheckpointUnitTest(unittest.TestCase):
             )
             self.assertEqual(result_opt_out.returncode, 0, result_opt_out.stderr)
             self.assertNotIn("compose.webrtc.yaml", docker_log.read_text(encoding="utf-8"))
+
+    def test_run_compose_adds_ultra_overlay_when_enabled(self):
+        with temp_workspace() as temp_dir:
+            root = Path(temp_dir)
+            env_file = root / ".env"
+            env_file.write_text("", encoding="utf-8")
+            (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            (root / "compose.ultra.yaml").write_text("services: {}\n", encoding="utf-8")
+
+            fake_docker = root / "docker"
+            docker_log = root / "docker.args"
+            write_executable(
+                fake_docker,
+                f"""
+                #!/bin/sh
+                echo "$@" >> "{docker_log}"
+                if [ "$1" = info ]; then exit 0; fi
+                exit 0
+                """,
+            )
+
+            result = run_script(
+                f'. "{PROJECT_ROOT / "scripts/lib.sh"}"; run_compose "{env_file}" up -d',
+                cwd=root,
+                env={"DOCKER": str(fake_docker), "RA2_COMPOSE_ULTRA": "1"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("compose.ultra.yaml", docker_log.read_text(encoding="utf-8"))
 
 
 class TlsEnsureCheckpointUnitTest(unittest.TestCase):

@@ -1,0 +1,28 @@
+# Optional Tailscale sidecar for secure remote Moonlight access.
+# Does not replace router port forwards for WebRTC fallback.
+#
+# Launch:
+#   RA2_COMPOSE_TAILSCALE=1 sh -c '. ./scripts/lib.sh; run_compose .env up -d'
+#
+# Set TAILSCALE_AUTHKEY in .env (one-time reusable key from Tailscale admin console).
+# Forward UDP 41641 to the NAS LAN IP to encourage direct WireGuard peer connections.
+# See docs/TAILSCALE.md
+
+services:
+  ra2-tailscale:
+    image: tailscale/tailscale:latest
+    container_name: ra2-tailscale
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-}
+      TS_HOSTNAME: ${TAILSCALE_HOSTNAME:-ra2-nas}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_EXTRA_ARGS: ${TAILSCALE_EXTRA_ARGS:---accept-routes}
+    volumes:
+      - ${TAILSCALE_STATE_DIR:-./data/tailscale/state}:/var/lib/tailscale
+    restart: unless-stopped

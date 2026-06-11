@@ -1,0 +1,48 @@
+# Profile 2 (browser-native): Selkies/Webtop — zero-install web desktop via WebRTC/Wayland.
+# Runs BESIDE ra2-player-1/2. See docs/SELKIES_EXPERIMENT.md
+#
+# Launch: RA2_COMPOSE_SELKIES=1 sh scripts/redeploy-profile-selkies.sh
+# Browser: https://<NAS_LAN_IP>:6101
+
+services:
+  ra2-selkies-experiment:
+    image: ${SELKIES_IMAGE:-lscr.io/linuxserver/webtop:latest}
+    container_name: ra2-selkies-experiment
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "${SELKIES_HTTP_PORT:-6100}:3000/tcp"
+      - "${SELKIES_HTTPS_PORT:-6101}:3001/tcp"
+    environment:
+      PUID: ${SELKIES_PUID:-1026}
+      PGID: ${SELKIES_PGID:-100}
+      TZ: ${TZ:-America/New_York}
+      PASSWORD: ${SELKIES_PASSWORD:-change-me}
+      # J4125 (no AVX2) always falls back to X11; do not force Wayland.
+      PIXELFLUX_WAYLAND: "false"
+      AUTO_GPU: "true"
+      DRINODE: /dev/dri/renderD128
+      DRI_NODE: /dev/dri/renderD128
+      MAX_RES: ${SELKIES_MAX_RES:-1280x720}
+      MAX_RESOLUTION: ${SELKIES_MAX_RESOLUTION:-1280x720}
+      SELKIES_IS_MANUAL_RESOLUTION_MODE: "true"
+      SELKIES_MANUAL_WIDTH: ${SELKIES_MANUAL_WIDTH:-1280}
+      SELKIES_MANUAL_HEIGHT: ${SELKIES_MANUAL_HEIGHT:-720}
+      SELKIES_FRAMERATE: ${SELKIES_FRAMERATE:-24}
+      SELKIES_H264_CRF: ${SELKIES_H264_CRF:-25}
+      SELKIES_SECOND_SCREEN: "false"
+      # X11 webtop image only accepts x264enc in settings; pixelflux still uses DRI when available.
+      SELKIES_ENCODER: x264enc
+      INTEL_DEBUG: ${INTEL_DEBUG:-norbc}
+    volumes:
+      - ${SELKIES_CONFIG_DIR:-./data/selkies-experiment/config}:/config
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+    device_cgroup_rules:
+      - "c 13:* rmw"
+      - "c 226:* rmw"
+    group_add:
+      - "${RENDER_GID:-937}"
+      - "${VIDEO_GID:-44}"
+    shm_size: "1gb"
+    restart: unless-stopped

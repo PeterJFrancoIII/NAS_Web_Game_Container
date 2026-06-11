@@ -9,6 +9,25 @@ This project targets the audited DS225+ layout:
 
 The containers use an internal Docker bridge, not macvlan. Player 1 is always `172.22.20.11`, Player 2 is always `172.22.20.12`, and browsers connect through NAS ports `6081` and `6082`.
 
+## Streaming paths
+
+| Path | Purpose | Documentation |
+|------|---------|---------------|
+| Moonlight + Sunshine/Wolf | **Primary** low-latency play | `docs/MOONLIGHT_EXPERIMENT.md` |
+| noVNC | Admin, recovery, debugging | §9 below |
+| WebRTC `remote.html` | Legacy browser fallback | §9 below |
+| Tailscale | Secure remote Moonlight | `docs/TAILSCALE.md` |
+
+Run host prerequisites before Moonlight experiments:
+
+```bash
+sh scripts/check-host-prerequisites.sh
+sh scripts/check-moonlight-ready.sh
+```
+
+Production RAM baseline is **6 GB**. Stock 1.7 GB DS225+ RAM is acceptable for fallback/testing only.
+Prefer wired **2.5GbE or 1GbE** when measuring latency.
+
 ## 1. Copy Project To NAS
 
 Copy this project into:
@@ -78,7 +97,7 @@ sh scripts/bootstrap-nas.sh build
 
 ## 5. Start The Stack
 
-Running two Wine game instances on the stock 2 GB DS225+ is an OOM risk, especially alongside Plex or other containers. The research recommends expanding RAM before treating this as a stable two-player setup.
+Running two Wine game instances on the stock 2 GB DS225+ is an OOM risk, especially alongside Plex or other containers. The research recommends expanding RAM to **6 GB** before treating Moonlight or two-player production as stable.
 
 ```bash
 cd /volume2/Data/App_Development/ra2-lan-party/project
@@ -116,10 +135,10 @@ On the target DS225+ test system, `/dev/dri/renderD128` is owned by group `937` 
 
 The DS225+ uses an Intel J4125 (Gemini Lake), which supports hardware H.264 and HEVC encoding. On this CPU, the modern `iHD` driver can open successfully but only report `VAProfileNone`, which hides the usable hardware encoders. Use `LIBVA_DRIVER_NAME=i965` instead.
 
-Set `RENDER_GID`, `VIDEO_GID`, `DRI_DEVICE`, and `LIBVA_DRIVER_NAME` in `.env` if the defaults do not match your NAS. Then start with the overlay:
+Set `RENDER_GID`, `VIDEO_GID`, `DRI_DEVICE`, and `LIBVA_DRIVER_NAME` in `.env` if the defaults do not match your NAS. Enable this only after the base noVNC stack is stable, then start with the overlay:
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.transcode.yaml up -d --build
+RA2_COMPOSE_TRANSCODE=1 docker compose --env-file .env -f compose.yaml -f compose.transcode.yaml up -d --build
 ```
 
 Verify VA-API visibility:
@@ -206,6 +225,29 @@ Use a trusted DSM certificate and proxy `https://MediaServer2.local/ra2-p1` → 
 
 ## 9. Connect Players
 
+### Moonlight (primary target)
+
+Deploy side-by-side experiments without stopping RA2 players:
+
+```bash
+# Smallest experiment:
+docker compose --env-file .env -f compose.sunshine.yaml up -d
+
+# Preferred architecture (Wayland + inputtino):
+docker compose --env-file .env -f compose.wolf.yaml up -d
+```
+
+Pair the **Moonlight** client to the NAS LAN IP. For remote play, use Tailscale — see `docs/TAILSCALE.md`. Do **not** expose GameStream ports to the internet.
+
+Verify:
+
+```bash
+sh scripts/check-moonlight-ready.sh
+sh scripts/compare-moonlight-webrtc.sh
+```
+
+### noVNC (admin / recovery fallback)
+
 From client browsers on the LAN (use `https://` when TLS is enabled):
 
 ```text
@@ -219,9 +261,15 @@ Use the VNC passwords from `.env`. Trust the self-signed certificate on first vi
 
 If the NAS uses the secondary LAN IP, set `NAS_LAN_IP` in `.env` and regenerate TLS if needed.
 
-### WebRTC remote play (UDP media, TCP/WSS control)
+### WebRTC remote play (legacy browser fallback)
 
-Enable the opt-in overlay when you want lower-latency remote play over the internet:
+WebRTC is **not** the long-term primary path. Use it only when Moonlight is unavailable or for debugging. If video is connected but the screen is blank, run:
+
+```bash
+sh scripts/check-webrtc-ice-reachability.sh
+```
+
+Enable the opt-in overlay when you need legacy browser remote play:
 
 ```bash
 cd /volume2/Data/App_Development/ra2-lan-party/project
@@ -245,13 +293,125 @@ Router/DSM forwards for WebRTC:
   - `62001-62020`: player 1 media
   - `62021-62040`: player 2 media
 
-noVNC remains available as fallback on the same `6081`/`6082` ports.
+noVNC remains available as admin fallback on the same `6081`/`6082` ports.
 
 Verify:
 
 ```bash
 RA2_COMPOSE_WEBRTC=1 sudo sh scripts/verify-deployment.sh
+sh scripts/check-webrtc-ice-reachability.sh
 ```
+
+### Low-latency baseline (DS225+)
+
+Default stable preset (hardware H.264, low copy cost):
+
+```bash
+WEBRTC_LATENCY_PRESET=stable
+WEBRTC_VIDEO_CODEC=H264
+WEBRTC_VIDEO_WIDTH=1024
+WEBRTC_VIDEO_HEIGHT=768
+WEBRTC_VIDEO_FPS=24
+WEBRTC_VIDEO_BITRATE=1000000
+WEBRTC_VIDEO_REQUIRE_HW=1
+```
+
+Redeploy from your workstation (sync + rebuild + SDP check):
+
+```bash
+NAS_HOST=MediaServer2Local sh scripts/redeploy-webrtc.sh
+```
+
+Host preflight before play sessions:
+
+```bash
+sh scripts/check-host-prerequisites.sh
+sh scripts/check-low-latency-host.sh
+```
+
+### Streaming session prep (no DSM boot task)
+
+For now, apply DRI/uinput permissions manually each boot (or after DSM updates):
+
+```bash
+sudo sh scripts/prepare-streaming-session.sh
+```
+
+When `/dev/uinput` is available, enable it in streaming containers:
+
+```bash
+RA2_COMPOSE_MOONLIGHT_UINPUT=1 sudo sh scripts/redeploy-moonlight-poc.sh wolf
+```
+
+**Deferred:** persistent boot-time setup via `scripts/dsm-boot-task.sh` in DSM Task Scheduler — add when you want permissions to survive reboot without re-running the script above.
+
+See `docs/CONSOLIDATED_ARCHITECTURE.md` for the full implementation order.
+
+Confirm render group IDs match `.env` (`RENDER_GID`, `VIDEO_GID`). Inside the container:
+
+```bash
+docker exec ra2-player-1 sh -lc 'id; ls -l /dev/dri/renderD128; gst-inspect-1.0 vah264enc | head'
+```
+
+### Two-player RAM profile (DS225+)
+
+The DS225+ has about 1.7 GB RAM. Running two full player stacks can push the NAS into swap and freeze Wine (`gamemd.exe` zombie). Use the low-memory profile in `.env`:
+
+```bash
+RA2_MEMORY_PROFILE=two-player-low
+RA2_MEM_LIMIT=512m
+RA2_SHM_SIZE=256m
+RA2_ENABLE_NOVNC_FALLBACK=1
+RA2_ENABLE_AUDIO_PROXY=0
+RA2_ENABLE_LATENCY_PROXY=0
+AUDIO_QUEUE_BUFFERS=4
+AUDIO_WEBM_CLUSTER_MS=150
+```
+
+Redeploy both players with memory checks:
+
+```bash
+NAS_HOST=MediaServer2Local sh scripts/redeploy-low-memory.sh
+```
+
+Preflight (warns on swap / low available memory):
+
+```bash
+sudo sh scripts/check-low-latency-host.sh
+```
+
+If swap remains high, lower capture load:
+
+```bash
+RESOLUTION=800x600
+WEBRTC_VIDEO_WIDTH=800
+WEBRTC_VIDEO_HEIGHT=600
+WEBRTC_VIDEO_FPS=20
+WEBRTC_VIDEO_BITRATE=800000
+```
+
+Rollback to larger per-container limits:
+
+```bash
+RA2_MEM_LIMIT=768m
+RA2_SHM_SIZE=512m
+RA2_ENABLE_AUDIO_PROXY=1
+RA2_ENABLE_LATENCY_PROXY=1
+```
+
+### Play-session host tuning
+
+- **Primary play:** Moonlight over LAN or Tailscale direct path.
+- **Admin/recovery:** noVNC `vnc.html` on ports 6081/6082.
+- Use **wired 2.5GbE or 1GbE** on client and NAS when measuring latency.
+- Pause DSM **indexing**, **antivirus**, and **media thumbnail** scans during play.
+- Watch swap: `free -h` — swap use correlates with latency spikes on 2–4 GB RAM models.
+- Moonlight vs WebRTC comparison: `scripts/compare-moonlight-webrtc.sh`.
+- Tailscale direct-path check: `scripts/check-tailscale-direct.sh`.
+- Optional Selkies/Wayland comparison: see `docs/SELKIES_EXPERIMENT.md` and `scripts/compare-selkies-webrtc.sh`.
+- UDP ICE test profile: `RA2_COMPOSE_WEBRTC_UDP=1 sh scripts/redeploy-webrtc-udp.sh` (TCP remains fallback).
+- HEVC test: set `WEBRTC_LATENCY_PRESET=experimental` or `WEBRTC_VIDEO_CODEC=H265`, then open `remote.html?codec=H265`.
+- Virtual input test: set `WEBRTC_INPUT_BACKEND=auto` (falls back to xdotool on Xvfb if uinput does not reach the game).
 
 ## 9. Synology Firewall
 

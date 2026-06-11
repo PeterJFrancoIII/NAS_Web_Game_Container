@@ -1,0 +1,90 @@
+FROM archlinux:latest AS builder
+
+ARG WINE_BUILD=10.8
+ARG WINE_VARIANT=amd64-wow64
+
+RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
+    && pacman -Syu --noconfirm \
+    && pacman -S --needed --noconfirm \
+      ca-certificates curl gcc git gstreamer gst-plugins-base pkgconf tar xz \
+    && curl -fsSL -o /tmp/wine.tar.xz "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_BUILD}/wine-${WINE_BUILD}-${WINE_VARIANT}.tar.xz" \
+    && mkdir -p /opt/wine \
+    && tar -xJf /tmp/wine.tar.xz -C /opt/wine --strip-components=1 \
+    && rm /tmp/wine.tar.xz
+
+COPY container/stream-helper.c /src/stream-helper.c
+
+RUN pacman -S --needed --noconfirm \
+      gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
+      gst-libav gst-plugin-va \
+    && gcc /src/stream-helper.c -o /src/stream-helper \
+      $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-app-1.0)
+
+FROM archlinux:latest
+
+ARG WINE_BUILD=10.8
+ARG WINE_VARIANT=amd64-wow64
+ARG WINE_ARCH=win64
+ARG WINE_ENABLE_MULTILIB=0
+
+COPY --from=builder /opt/wine /opt/wine
+COPY --from=builder /src/stream-helper /opt/ra2/stream-helper
+
+RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/share/locale/* usr/share/man/* usr/share/licenses/*\n' >> /etc/pacman.conf \
+    && if [ "${WINE_ENABLE_MULTILIB}" = "1" ]; then printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf; fi \
+    && pacman -Syu --noconfirm \
+    && pacman -S --needed --noconfirm \
+      alsa-lib alsa-plugins alsa-utils ca-certificates curl \
+      gstreamer gst-libav gst-plugin-va gst-plugins-bad gst-plugins-base \
+      gst-plugins-good gst-plugins-ugly \
+      libglvnd libva libva-intel-driver mesa openbox pulseaudio pulseaudio-alsa \
+      python python-websockets supervisor tar xdotool xorg-server-xvfb xz \
+    && if [ "${WINE_ENABLE_MULTILIB}" = "1" ]; then pacman -S --needed --noconfirm \
+      lib32-alsa-lib lib32-alsa-plugins lib32-fontconfig lib32-freetype2 \
+      lib32-libglvnd lib32-libpulse lib32-libx11 lib32-libxcursor lib32-libxext \
+      lib32-libxi lib32-libxinerama lib32-libxrandr lib32-libxrender lib32-mesa; fi \
+    && rm -f /usr/lib/dri/iHD_drv_video.so \
+    && pacman -Scc --noconfirm \
+    && useradd -m -u 1000 -s /bin/bash commander \
+    && mkdir -p /opt/ra2 /home/commander/game_assets /home/commander/.wine \
+    && chown -R commander:commander /opt/ra2 /opt/wine /home/commander
+
+COPY container/asound.conf /etc/asound.conf
+COPY container/pulse/ /opt/ra2/pulse/
+COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
+COPY --chown=commander:commander container/start-game-ultra.sh /opt/ra2/start-game-ultra.sh
+COPY --chown=commander:commander container/start-stream-gateway.sh /opt/ra2/start-stream-gateway.sh
+COPY --chown=commander:commander container/winedbg-minidump.sh /opt/ra2/winedbg-minidump.sh
+COPY --chown=commander:commander container/ra2-stream-gateway.py /opt/ra2/ra2-stream-gateway.py
+COPY --chown=commander:commander container/healthcheck-ultra.sh /opt/ra2/healthcheck-ultra.sh
+COPY --chown=commander:commander container/entrypoint-ultra.sh /opt/ra2/entrypoint.sh
+COPY --chown=commander:commander container/supervisord.ultra.conf /opt/ra2/supervisord.conf
+COPY --chown=commander:commander container/remote-ultra/ /opt/ra2/remote-ultra/
+
+RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/start-pulseaudio.sh \
+      /opt/ra2/start-game-ultra.sh /opt/ra2/start-stream-gateway.sh /opt/ra2/winedbg-minidump.sh /opt/ra2/healthcheck-ultra.sh \
+      /opt/ra2/ra2-stream-gateway.py /opt/ra2/stream-helper \
+    && chown commander:commander /opt/ra2/stream-helper
+
+USER commander
+WORKDIR /home/commander
+
+ENV PATH="/opt/wine/bin:${PATH}" \
+    DISPLAY=:1 \
+    WINEARCH=${WINE_ARCH} \
+    WINEPREFIX=/home/commander/.wine \
+    WINEDEBUG=-all \
+    LIBVA_DRIVER_NAME=i965 \
+    GST_VAAPI_ALL_DRIVERS=1 \
+    GST_VA_ALL_DRIVERS=1 \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    MESA_GL_VERSION_OVERRIDE=2.1 \
+    ULTRA_STREAM_ENABLED=1 \
+    ULTRA_GATEWAY_PORT=6080 \
+    ULTRA_VIDEO_CODEC=H264 \
+    ULTRA_VIDEO_FPS=24 \
+    RA2_ENABLE_NOVNC_FALLBACK=0
+
+EXPOSE 6080
+
+ENTRYPOINT ["/opt/ra2/entrypoint.sh"]

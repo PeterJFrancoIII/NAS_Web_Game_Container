@@ -1,15 +1,29 @@
 # Synology RA2 Arch LAN Party
 
-This project prepares a Synology DS225+ to host two Red Alert 2 / Yuri's Revenge game instances in lightweight Arch Linux Docker containers. Each player connects from a web browser through noVNC, while the game instances see each other on a static private Docker LAN.
+This project prepares a Synology DS225+ to host two Red Alert 2 / Yuri's Revenge game instances in lightweight Arch Linux Docker containers. Each player connects over the network while the game instances see each other on a static private Docker LAN.
+
+## Streaming architecture
+
+| Path | Role | Client |
+|------|------|--------|
+| **Ultra Arch Browser** | Primary browser play (single-port WSS/WebCodecs) | Chromium `https://NAS:6081/` |
+| **Moonlight + Sunshine/Wolf** | Lowest latency native play | Moonlight app |
+| **noVNC** | Admin, recovery, debugging | Browser `vnc.html` |
+| **WebRTC** | Legacy browser fallback | Browser `remote.html` |
+
+See `docs/ULTRA_LIGHT_ARCH_STREAMING.md` for the ultra-light browser profile and `docs/MOONLIGHT_EXPERIMENT.md` for Moonlight.
+
+**Production baseline:** upgrade the DS225+ to **6 GB RAM** before treating Moonlight or stable two-player play as production-ready (stock 1.7 GB is fallback/testing only).
 
 ## What It Builds
 
 - `ra2-player-1`: Arch Linux + Wine + Xvfb/noVNC, internal IP `172.22.20.11`, browser port `6081`.
 - `ra2-player-2`: Arch Linux + Wine + Xvfb/noVNC, internal IP `172.22.20.12`, browser port `6082`.
+- Optional side-by-side Moonlight experiments: `compose.sunshine.yaml`, `compose.wolf.yaml`.
 - Shared read-only assets folder for legal game files.
 - Separate persistent Wine prefixes for each player.
 
-The runtime avoids full VMs and desktop environments. It uses `Xvfb`, `openbox`, `x11vnc`, `websockify`, and noVNC to keep memory use low on the DS225+.
+The runtime avoids full VMs and desktop environments. It uses `Xvfb`, `openbox`, `x11vnc`, `websockify`, and noVNC for admin/recovery while Moonlight becomes the performance target.
 
 ## Legal And Asset Boundary
 
@@ -26,8 +40,8 @@ Expected NAS asset path:
 On the Synology:
 
 ```bash
-cd /volume2/Data/App_Development
-mkdir -p ra2-lan-party/project
+mkdir -p /volume2/Data/App_Development/ra2-lan-party/project
+cd /volume2/Data/App_Development/ra2-lan-party/project
 ```
 
 Copy this project into:
@@ -59,27 +73,43 @@ vi .env
 Run:
 
 ```bash
-docker compose --env-file .env up -d --build
+sh scripts/bootstrap-nas.sh launch
 ```
 
 Optional hardware video-transcoding tooling is available through `compose.transcode.yaml`. It grants `/dev/dri` access for FFmpeg/GStreamer VA-API tests while leaving the default noVNC path unchanged:
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.transcode.yaml up -d --build
+RA2_COMPOSE_TRANSCODE=1 docker compose --env-file .env -f compose.yaml -f compose.transcode.yaml up -d --build
 ```
 
-Connect (HTTPS — required for stable noVNC audio and crypto):
+Connect:
 
-```bash
-sh scripts/bootstrap-nas.sh launch   # auto-generates TLS and starts with compose.https.yaml
-# or manually:
-sh scripts/ensure-tls.sh
-docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
+**Primary (after Moonlight validation):**
+
+```text
+Moonlight client → NAS LAN IP or Tailscale IP
+See docs/MOONLIGHT_EXPERIMENT.md
 ```
+
+**Admin / recovery (noVNC):**
 
 ```text
 Player 1: https://192.168.0.193:6081/vnc.html
 Player 2: https://192.168.0.193:6082/vnc.html
+```
+
+**Legacy browser fallback (WebRTC):**
+
+```text
+Player 1: https://192.168.0.193:6081/remote.html?signal=6083&input=6085
+```
+
+Preflight before play:
+
+```bash
+sh scripts/check-host-prerequisites.sh   # VA-API, uinput, RAM
+sh scripts/check-moonlight-ready.sh        # Moonlight experiments
+sh scripts/check-webrtc-ice-reachability.sh  # WebRTC fallback only
 ```
 
 The noVNC page includes a small **Latency** panel. It measures browser-to-container
@@ -99,7 +129,7 @@ AUDIO_OPUS_FRAME_MS=10
 AUDIO_QUEUE_BUFFERS=2
 ```
 
-See `docs/HTTPS.md` for TLS options (self-signed or DSM reverse proxy) and `docs/DEPLOY_SYNOLOGY.md` for the full deployment guide.
+See `docs/HTTPS.md` for TLS options (self-signed or DSM reverse proxy), `compose.https.yaml` for HTTPS overlay, and `docs/DEPLOY_SYNOLOGY.md` for the full deployment guide.
 
 Verify a live deployment on the NAS:
 
@@ -163,7 +193,12 @@ sudo sh scripts/verify-deployment.sh
 ## Important Files
 
 - `compose.yaml`: Synology two-player stack.
+- `compose.sunshine.yaml` / `compose.wolf.yaml`: Moonlight proof-of-concept experiments.
+- `compose.tailscale.yaml`: Secure remote access for Moonlight.
+- `compose.webrtc.yaml`: Legacy browser WebRTC overlay (fallback only).
 - `.env.example`: deployment values to copy into `.env`.
+- `docs/MOONLIGHT_EXPERIMENT.md`: Moonlight primary path guide.
+- `docs/TAILSCALE.md`: Remote access without exposing GameStream ports.
 - `container/Dockerfile`: minimal Arch Linux Wine/noVNC image.
 - `container/entrypoint.sh`: first-run Wine prefix initialization and registry setup.
 - `container/supervisord.conf`: process supervision for display, browser bridge, and game.

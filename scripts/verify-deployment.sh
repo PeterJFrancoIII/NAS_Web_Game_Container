@@ -127,12 +127,50 @@ else
   fail "audio/video sync budget failed"
 fi
 
+note "Host prerequisites (Moonlight primary path)"
+if sh "$SCRIPT_DIR/check-host-prerequisites.sh" 2>/dev/null; then
+  pass "host prerequisites passed (VA-API, uinput, RAM)"
+else
+  printf '[WARN] host prerequisites not met — see docs/MOONLIGHT_EXPERIMENT.md\n'
+  printf '       Run: sh scripts/check-host-prerequisites.sh\n'
+fi
+
+if sh "$SCRIPT_DIR/check-low-latency-host.sh" 2>/dev/null; then
+  pass "low-latency host check passed"
+else
+  printf '[WARN] low-latency host check reported warnings\n'
+fi
+
+if [ "${RA2_COMPOSE_MOONLIGHT:-0}" = "1" ] || [ "${RA2_COMPOSE_WOLF:-0}" = "1" ]; then
+  note "Moonlight experiments"
+  if sh "$SCRIPT_DIR/check-moonlight-ready.sh"; then
+    pass "Moonlight readiness passed"
+  else
+    fail "Moonlight readiness failed"
+  fi
+fi
+
+if [ "${RA2_COMPOSE_TAILSCALE:-0}" = "1" ]; then
+  note "Tailscale direct path"
+  if sh "$SCRIPT_DIR/check-tailscale-direct.sh"; then
+    pass "Tailscale direct-path check passed"
+  else
+    printf '[WARN] Tailscale may be using DERP relay — see docs/TAILSCALE.md\n'
+  fi
+fi
+
 if [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ]; then
-  note "WebRTC remote play"
+  note "WebRTC legacy fallback"
   if sh "$SCRIPT_DIR/check-webrtc-ready.sh"; then
     pass "WebRTC readiness passed"
   else
     fail "WebRTC readiness failed"
+  fi
+  if sh "$SCRIPT_DIR/check-webrtc-ice-reachability.sh" 2>/dev/null; then
+    pass "WebRTC ICE reachability passed"
+  else
+    printf '[WARN] WebRTC ICE/media ports may be blocked upstream\n'
+    printf '       Run: sh scripts/check-webrtc-ice-reachability.sh\n'
   fi
 fi
 
@@ -200,7 +238,7 @@ if [ -f "$ENV_FILE" ]; then
     if [ -n "$public_host" ]; then
       host="$public_host"
     fi
-    printf '\nWebRTC remote play URLs:\n'
+    printf '\nWebRTC legacy fallback URLs:\n'
     printf '  Player 1: %s://%s:%s/remote.html?signal=%s&input=%s\n' "$scheme" "$host" "$port1" "$signal1" "$input1"
     printf '  Player 2: %s://%s:%s/remote.html?signal=%s&input=%s\n' "$scheme" "$host" "$port2" "$signal2" "$input2"
     printf '  UDP forwards: %s-%s (player 1), %s-%s (player 2)\n' "$udp1_min" "$udp1_max" "$udp2_min" "$udp2_max"

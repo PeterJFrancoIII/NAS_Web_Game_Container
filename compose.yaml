@@ -5,11 +5,14 @@ x-ra2-common: &ra2-common
   build:
     context: .
     dockerfile: container/Dockerfile
-  restart: unless-stopped
+  restart: "${RA2_RESTART_POLICY:-no}"
+  init: true
+  stop_grace_period: 15s
+  pids_limit: ${RA2_PIDS_LIMIT:-256}
   security_opt:
     - seccomp:unconfined
-  shm_size: "512m"
-  mem_limit: "768m"
+  shm_size: "${RA2_SHM_SIZE:-256m}"
+  mem_limit: "${RA2_MEM_LIMIT:-512m}"
   healthcheck:
     test: ["CMD-SHELL", "/bin/sh /opt/ra2/healthcheck-novnc.sh || exit 1"]
     interval: 30s
@@ -31,6 +34,10 @@ x-ra2-common: &ra2-common
     AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
     AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
     LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
+    RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
+    RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
+    RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
+    RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
   volumes:
     - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
   networks:
@@ -40,6 +47,8 @@ services:
   ra2-player-1:
     <<: *ra2-common
     container_name: ra2-player-1
+    mem_limit: "${PLAYER1_MEM_LIMIT:-${RA2_MEM_LIMIT:-512m}}"
+    shm_size: "${PLAYER1_SHM_SIZE:-${RA2_SHM_SIZE:-256m}}"
     environment:
       TZ: ${TZ:-America/New_York}
       RESOLUTION: ${RESOLUTION:-1024x768}
@@ -55,6 +64,10 @@ services:
       AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
       AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
       LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
+      RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
+      RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
+      RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
+      RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
       PLAYER_ID: "1"
       PLAYER_SERIAL: ${PLAYER1_SERIAL:?set PLAYER1_SERIAL in .env}
       VNC_PASSWORD: ${PLAYER1_VNC_PASSWORD:?set PLAYER1_VNC_PASSWORD in .env}
@@ -68,6 +81,7 @@ services:
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
       - ./container/start-pulseaudio.sh:/opt/ra2/start-pulseaudio.sh:ro
       - ./container/start-websockify.sh:/opt/ra2/start-websockify.sh:ro
+      - ./container/start-x11vnc.sh:/opt/ra2/start-x11vnc.sh:ro
       - ./container/healthcheck-novnc.sh:/opt/ra2/healthcheck-novnc.sh:ro
       - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
       - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro
@@ -83,6 +97,8 @@ services:
   ra2-player-2:
     <<: *ra2-common
     container_name: ra2-player-2
+    mem_limit: "${PLAYER2_MEM_LIMIT:-${RA2_MEM_LIMIT:-512m}}"
+    shm_size: "${PLAYER2_SHM_SIZE:-${RA2_SHM_SIZE:-256m}}"
     environment:
       TZ: ${TZ:-America/New_York}
       RESOLUTION: ${RESOLUTION:-1024x768}
@@ -98,6 +114,10 @@ services:
       AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
       AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
       LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
+      RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
+      RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
+      RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
+      RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
       PLAYER_ID: "2"
       PLAYER_SERIAL: ${PLAYER2_SERIAL:?set PLAYER2_SERIAL in .env}
       VNC_PASSWORD: ${PLAYER2_VNC_PASSWORD:?set PLAYER2_VNC_PASSWORD in .env}
@@ -111,6 +131,7 @@ services:
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
       - ./container/start-pulseaudio.sh:/opt/ra2/start-pulseaudio.sh:ro
       - ./container/start-websockify.sh:/opt/ra2/start-websockify.sh:ro
+      - ./container/start-x11vnc.sh:/opt/ra2/start-x11vnc.sh:ro
       - ./container/healthcheck-novnc.sh:/opt/ra2/healthcheck-novnc.sh:ro
       - ./container/audio-proxy.sh:/opt/ra2/audio-proxy.sh:ro
       - ./container/latency-proxy.sh:/opt/ra2/latency-proxy.sh:ro

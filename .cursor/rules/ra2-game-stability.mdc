@@ -1,0 +1,13 @@
+---
+description: Preserve the RA2 golden-master stability invariant
+alwaysApply: true
+---
+
+# RA2 Game Stability
+
+The Red Alert 2 / Yuri's Revenge NAS golden master depends on pinning each live `gamemd.exe` process to exactly one assigned CPU.
+
+- Do not remove or bypass `RA2_GAME_CPUSET`, `taskset -c "$GAME_CPUSET"`, or the watchdog re-pin of `gamemd.exe`.
+- Player 1 should default to CPU `0`; player 2 should default to CPU `1`; future players should default to `PLAYER_ID - 1`.
+- If crashes or lockups recur, debug Wine/runtime/process state instead of blocking normal gameplay inputs.
+- Keep the golden-master details in `docs/GOLDEN_MASTER.md` current whenever the stable runtime changes.

@@ -114,14 +114,74 @@ compose_file_args() {
   if [ "$extra" = "webrtc" ]; then
     printf '%s\n' "-f" "compose.webrtc.yaml"
   fi
+  if [ "$extra" = "webrtc-host" ]; then
+    printf '%s\n' "-f" "compose.webrtc-host.yaml"
+  fi
+  if [ "$extra" = "webrtc-udp" ]; then
+    printf '%s\n' "-f" "compose.webrtc-udp.yaml"
+  fi
+  if moonlight_sunshine_overlay_enabled; then
+    printf '%s\n' "-f" "compose.sunshine.yaml"
+  fi
+  if moonlight_wolf_overlay_enabled; then
+    printf '%s\n' "-f" "compose.wolf.yaml"
+  fi
+  if moonlight_uinput_overlay_enabled; then
+    printf '%s\n' "-f" "compose.moonlight-uinput.yaml"
+  fi
+  if selkies_overlay_enabled; then
+    printf '%s\n' "-f" "compose.selkies-experiment.yaml"
+  fi
+  if ultra_overlay_enabled; then
+    printf '%s\n' "-f" "compose.ultra.yaml"
+  fi
+  if tailscale_overlay_enabled; then
+    printf '%s\n' "-f" "compose.tailscale.yaml"
+  fi
 }
 
 transcode_overlay_enabled() {
-  [ "${RA2_COMPOSE_TRANSCODE:-1}" != "0" ] && [ -f compose.transcode.yaml ]
+  [ "${RA2_COMPOSE_TRANSCODE:-0}" = "1" ] && [ -f compose.transcode.yaml ]
 }
 
 webrtc_overlay_enabled() {
   [ "${RA2_COMPOSE_WEBRTC:-0}" = "1" ] && [ -f compose.webrtc.yaml ]
+}
+
+webrtc_host_overlay_enabled() {
+  [ "${RA2_COMPOSE_WEBRTC_HOST:-0}" = "1" ] && [ -f compose.webrtc-host.yaml ]
+}
+
+webrtc_udp_overlay_enabled() {
+  [ "${RA2_COMPOSE_WEBRTC_UDP:-0}" = "1" ] && [ -f compose.webrtc-udp.yaml ]
+}
+
+webrtc_uinput_overlay_enabled() {
+  [ "${RA2_COMPOSE_WEBRTC_UINPUT:-0}" = "1" ] && [ -f compose.webrtc-uinput.yaml ]
+}
+
+moonlight_sunshine_overlay_enabled() {
+  [ "${RA2_COMPOSE_MOONLIGHT:-0}" = "1" ] && [ -f compose.sunshine.yaml ]
+}
+
+moonlight_wolf_overlay_enabled() {
+  [ "${RA2_COMPOSE_WOLF:-0}" = "1" ] && [ -f compose.wolf.yaml ]
+}
+
+moonlight_uinput_overlay_enabled() {
+  [ "${RA2_COMPOSE_MOONLIGHT_UINPUT:-0}" = "1" ] && [ -f compose.moonlight-uinput.yaml ]
+}
+
+selkies_overlay_enabled() {
+  [ "${RA2_COMPOSE_SELKIES:-0}" = "1" ] && [ -f compose.selkies-experiment.yaml ]
+}
+
+ultra_overlay_enabled() {
+  [ "${RA2_COMPOSE_ULTRA:-0}" = "1" ] && [ -f compose.ultra.yaml ]
+}
+
+tailscale_overlay_enabled() {
+  [ "${RA2_COMPOSE_TAILSCALE:-0}" = "1" ] && [ -f compose.tailscale.yaml ]
 }
 
 run_compose() {
@@ -137,6 +197,33 @@ run_compose() {
   fi
   if webrtc_overlay_enabled; then
     compose_args="$compose_args -f compose.webrtc.yaml"
+  fi
+  if webrtc_host_overlay_enabled; then
+    compose_args="$compose_args -f compose.webrtc-host.yaml"
+  fi
+  if webrtc_udp_overlay_enabled; then
+    compose_args="$compose_args -f compose.webrtc-udp.yaml"
+  fi
+  if webrtc_uinput_overlay_enabled; then
+    compose_args="$compose_args -f compose.webrtc-uinput.yaml"
+  fi
+  if moonlight_sunshine_overlay_enabled; then
+    compose_args="$compose_args -f compose.sunshine.yaml"
+  fi
+  if moonlight_wolf_overlay_enabled; then
+    compose_args="$compose_args -f compose.wolf.yaml"
+  fi
+  if moonlight_uinput_overlay_enabled; then
+    compose_args="$compose_args -f compose.moonlight-uinput.yaml"
+  fi
+  if selkies_overlay_enabled; then
+    compose_args="$compose_args -f compose.selkies-experiment.yaml"
+  fi
+  if ultra_overlay_enabled; then
+    compose_args="$compose_args -f compose.ultra.yaml"
+  fi
+  if tailscale_overlay_enabled; then
+    compose_args="$compose_args -f compose.tailscale.yaml"
   fi
 
   # shellcheck disable=SC2086

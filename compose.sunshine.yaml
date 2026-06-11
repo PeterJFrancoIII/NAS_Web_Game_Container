@@ -1,0 +1,33 @@
+# Profile 1 (secondary): Standalone Sunshine — use when Wolf is not needed.
+# Runs BESIDE ra2-player-1/2. Headless display is awkward on DS225+; prefer Wolf.
+#
+# Pair Moonlight to https://<NAS_LAN_IP>:47990
+
+services:
+  ra2-sunshine-experiment:
+    image: lscr.io/linuxserver/sunshine:latest
+    container_name: ra2-sunshine-experiment
+    network_mode: host
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      PUID: ${SUNSHINE_PUID:-1026}
+      PGID: ${SUNSHINE_PGID:-100}
+      TZ: ${TZ:-America/New_York}
+      CUSTOM_USER: ${SUNSHINE_USER:-ra2admin}
+      PASSWORD: ${SUNSHINE_PASSWORD:-change-me}
+      LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}
+      INTEL_DEBUG: ${INTEL_DEBUG:-norbc}
+      MESA_LOADER_DRIVER_OVERRIDE: ${MESA_LOADER_DRIVER_OVERRIDE:-zink}
+    volumes:
+      - ${SUNSHINE_CONFIG_DIR:-./data/sunshine-experiment/config}:/config
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+    device_cgroup_rules:
+      - "c 13:* rmw"
+      - "c 226:* rmw"
+    group_add:
+      - "${RENDER_GID:-937}"
+      - "${VIDEO_GID:-44}"
+    shm_size: "1gb"
+    restart: unless-stopped

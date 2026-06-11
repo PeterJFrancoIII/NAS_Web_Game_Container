@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RA2 Ultra Stream</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #e8e8e8; font: 14px/1.4 system-ui, sans-serif; }
+    #canvas { width: 100vw; height: 100vh; display: block; object-fit: contain; background: #000; cursor: crosshair; touch-action: none; }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.85); z-index: 2; }
+    #overlay.hidden { display: none; }
+    #overlayBox { max-width: 640px; padding: 20px; border: 1px solid #3a5a7a; border-radius: 8px; background: #111; text-align: center; }
+    #controlPanel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 5;
+      min-width: 240px;
+      max-width: 320px;
+      background: rgba(0,0,0,0.88);
+      border: 1px solid rgba(155,211,255,0.45);
+      border-radius: 8px;
+      color: #dff2ff;
+      font-size: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    #controlPanel.collapsed #panelBody { display: none; }
+    #panelHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(155,211,255,0.2);
+    }
+    #panelHeader:hover { background: rgba(155,211,255,0.08); }
+    #panelToggle { font-size: 10px; opacity: 0.8; }
+    #panelBody { padding: 10px; }
+    .field { margin-bottom: 10px; }
+    .field label {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0.85;
+    }
+    .field select,
+    .field button {
+      width: 100%;
+      padding: 5px 6px;
+      background: #1a1a1a;
+      color: #e8f4ff;
+      border: 1px solid #3a5a7a;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .field select:disabled { opacity: 0.45; }
+    #transportStatus {
+      margin-top: 8px;
+      padding: 8px;
+      background: rgba(20,30,40,0.9);
+      border: 1px solid rgba(100,140,180,0.3);
+      border-radius: 4px;
+      font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    #pendingNotice {
+      display: none;
+      margin-top: 6px;
+      padding: 6px 8px;
+      background: rgba(180,120,0,0.25);
+      border: 1px solid rgba(255,200,80,0.4);
+      border-radius: 4px;
+      font-size: 11px;
+      color: #ffe8a0;
+    }
+    #pendingNotice.visible { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="1024" height="768"></canvas>
+  <div id="overlay"><div id="overlayBox"><div id="overlayStatus">Click to connect</div></div></div>
+  <div id="controlPanel" class="collapsed">
+    <div id="panelHeader"><span>Transport</span><span id="panelToggle">▼</span></div>
+    <div id="panelBody">
+      <div class="field">
+        <label for="videoQuality">Video quality</label>
+        <select id="videoQuality">
+          <option value="low">Low (20 fps)</option>
+          <option value="balanced" selected>Balanced (24 fps)</option>
+          <option value="sharp">Sharp (24 fps)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="videoCodec">Hardware encoder</label>
+        <select id="videoCodec">
+          <option value="H264" selected>H.264 (VAAPI)</option>
+          <option value="H265">H.265 / HEVC (disabled - black screen)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="videoBitrate">Video bitrate</label>
+        <select id="videoBitrate">
+          <option value="600000">600 kbps</option>
+          <option value="900000" selected>900 kbps</option>
+          <option value="1200000">1.2 Mbps</option>
+          <option value="1600000">1.6 Mbps</option>
+          <option value="2000000">2.0 Mbps</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="audioEncoder">Audio encoder</label>
+        <select id="audioEncoder">
+          <option value="opus" selected>Opus low-latency</option>
+          <option value="pcm">PCM fallback</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="audioBitrate">Audio bitrate</label>
+        <select id="audioBitrate">
+          <option value="64000">64 kbps</option>
+          <option value="96000" selected>96 kbps</option>
+          <option value="128000">128 kbps</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="audioQuality">Audio quality</label>
+        <select id="audioQuality">
+          <option value="44100" selected>44.1 kHz stereo</option>
+          <option value="48000">48 kHz stereo</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="audioTest">Audio output</label>
+        <button id="audioTest" type="button">Enable / test audio</button>
+      </div>
+      <div class="field">
+        <label for="inputMoveHz">Input polling</label>
+        <select id="inputMoveHz">
+          <option value="60">60 Hz mouse</option>
+          <option value="125" selected>125 Hz mouse</option>
+          <option value="200">200 Hz mouse</option>
+        </select>
+      </div>
+      <div id="pendingNotice">Changes apply on reconnect.</div>
+      <div id="transportStatus">status: loading</div>
+    </div>
+  </div>
+  <script src="ultra-play.js"></script>
+</body>
+</html>

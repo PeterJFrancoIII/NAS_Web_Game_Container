@@ -19,9 +19,11 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
       ca-certificates \
       curl \
       ffmpeg \
+      gcc \
       git \
       gstreamer \
       gst-libav \
+      gst-plugin-va \
       gst-plugins-bad \
       gst-plugins-base \
       gst-plugins-good \
@@ -39,6 +41,7 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
       python-gobject \
       python-websockets \
       python-numpy \
+      pkgconf \
       socat \
       xdotool \
       supervisor \
@@ -75,16 +78,26 @@ COPY --chown=commander:commander container/latency-overlay.js /opt/ra2/latency-o
 COPY --chown=commander:commander container/cursor-lock.js /opt/ra2/cursor-lock.js
 COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
 COPY --chown=commander:commander container/start-websockify.sh /opt/ra2/start-websockify.sh
+COPY --chown=commander:commander container/start-x11vnc.sh /opt/ra2/start-x11vnc.sh
 COPY --chown=commander:commander container/healthcheck-novnc.sh /opt/ra2/healthcheck-novnc.sh
 COPY --chown=commander:commander container/webrtc-media.py /opt/ra2/webrtc-media.py
+COPY --chown=commander:commander container/webrtc-media-helper.c /opt/ra2/webrtc-media-helper.c
 COPY --chown=commander:commander container/input-proxy.py /opt/ra2/input-proxy.py
+COPY --chown=commander:commander container/uinput_backend.py /opt/ra2/uinput_backend.py
 COPY --chown=commander:commander container/start-webrtc.sh /opt/ra2/start-webrtc.sh
 COPY --chown=commander:commander container/start-input-proxy.sh /opt/ra2/start-input-proxy.sh
 COPY --chown=commander:commander container/remote/ /opt/ra2/remote/
 COPY --chown=commander:commander container/entrypoint.sh /opt/ra2/entrypoint.sh
 COPY --chown=commander:commander container/supervisord.conf /opt/ra2/supervisord.conf
 
-RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/audio-proxy.sh /opt/ra2/latency-proxy.sh /opt/ra2/start-pulseaudio.sh /opt/ra2/start-websockify.sh /opt/ra2/healthcheck-novnc.sh /opt/ra2/patch-novnc.sh /opt/ra2/start-webrtc.sh /opt/ra2/start-input-proxy.sh /opt/ra2/webrtc-media.py /opt/ra2/input-proxy.py
+RUN gcc /opt/ra2/webrtc-media-helper.c -o /opt/ra2/webrtc-media-helper \
+      $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0) \
+    && chmod +x /opt/ra2/entrypoint.sh /opt/ra2/audio-proxy.sh /opt/ra2/latency-proxy.sh \
+      /opt/ra2/start-pulseaudio.sh /opt/ra2/start-websockify.sh /opt/ra2/start-x11vnc.sh \
+      /opt/ra2/healthcheck-novnc.sh \
+      /opt/ra2/patch-novnc.sh /opt/ra2/start-webrtc.sh /opt/ra2/start-input-proxy.sh \
+      /opt/ra2/webrtc-media.py /opt/ra2/input-proxy.py /opt/ra2/webrtc-media-helper \
+    && chown commander:commander /opt/ra2/webrtc-media-helper
 
 USER commander
 WORKDIR /home/commander
@@ -96,6 +109,7 @@ ENV PATH="/opt/wine/bin:${PATH}" \
     WINEDEBUG=-all \
     LIBVA_DRIVER_NAME=i965 \
     GST_VAAPI_ALL_DRIVERS=1 \
+    GST_VA_ALL_DRIVERS=1 \
     LIBGL_ALWAYS_SOFTWARE=1 \
     MESA_GL_VERSION_OVERRIDE=2.1
 

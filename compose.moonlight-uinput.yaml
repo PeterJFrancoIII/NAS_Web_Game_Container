@@ -1,0 +1,18 @@
+# Optional /dev/uinput passthrough for Wolf, Sunshine, and Selkies.
+# Enable after DSM boot task loads uinput: RA2_COMPOSE_MOONLIGHT_UINPUT=1
+
+services:
+  ra2-sunshine-experiment:
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+      - ${UINPUT_DEVICE:-/dev/uinput}:/dev/uinput
+
+  ra2-wolf-experiment:
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+      - ${UINPUT_DEVICE:-/dev/uinput}:/dev/uinput
+
+  ra2-selkies-experiment:
+    devices:
+      - ${DRI_DEVICE:-/dev/dri}:/dev/dri
+      - ${UINPUT_DEVICE:-/dev/uinput}:/dev/uinput

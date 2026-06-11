@@ -2,6 +2,11 @@
 # Low-latency Opus audio proxy for the noVNC audio plugin.
 # Based on https://github.com/me-asri/noVNC-audio-plugin
 
+if [ "${RA2_ENABLE_AUDIO_PROXY:-1}" = "0" ]; then
+  printf '[audio-proxy] disabled (RA2_ENABLE_AUDIO_PROXY=0)\n' >&2
+  exit 0
+fi
+
 readonly SCRIPT="$0"
 
 readonly PULSE_PORT='4711'

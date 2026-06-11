@@ -1,0 +1,35 @@
+# Synology WebRTC: attach a macvlan NIC so RTP/ICE uses the real LAN IP (not Docker NAT).
+# Requires RA2_COMPOSE_WEBRTC=1. Set NAS_LAN_INTERFACE (e.g. eth0) and PLAYER1_MACVLAN_IP in .env.
+# Launch: RA2_COMPOSE_WEBRTC=1 RA2_COMPOSE_WEBRTC_HOST=1 docker compose --env-file .env \
+#   -f compose.yaml -f compose.https.yaml -f compose.webrtc.yaml -f compose.webrtc-host.yaml up -d
+
+networks:
+  ra2_macvlan:
+    driver: macvlan
+    driver_opts:
+      parent: ${NAS_LAN_INTERFACE:-eth0}
+    ipam:
+      config:
+        - subnet: ${NAS_LAN_SUBNET:-192.168.0.0/24}
+          gateway: ${NAS_LAN_GATEWAY:-192.168.0.1}
+
+services:
+  ra2-player-1:
+    networks:
+      ra2_lan: {}
+      ra2_macvlan:
+        ipv4_address: ${PLAYER1_MACVLAN_IP:-192.168.0.250}
+    environment:
+      WEBRTC_SIGNAL_PORT: ${PLAYER1_WEBRTC_SIGNAL_PORT:-6083}
+      WEBRTC_INPUT_PORT: ${PLAYER1_WEBRTC_INPUT_PORT:-6085}
+      WEBSOCKIFY_PORT: ${PLAYER1_HTTP_PORT:-6081}
+
+  ra2-player-2:
+    networks:
+      ra2_lan: {}
+      ra2_macvlan:
+        ipv4_address: ${PLAYER2_MACVLAN_IP:-192.168.0.251}
+    environment:
+      WEBRTC_SIGNAL_PORT: ${PLAYER2_WEBRTC_SIGNAL_PORT:-6084}
+      WEBRTC_INPUT_PORT: ${PLAYER2_WEBRTC_INPUT_PORT:-6086}
+      WEBSOCKIFY_PORT: ${PLAYER2_HTTP_PORT:-6082}

@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ "${RA2_ENABLE_LATENCY_PROXY:-1}" = "0" ]; then
+  printf '[latency-proxy] disabled (RA2_ENABLE_LATENCY_PROXY=0)\n' >&2
+  exit 0
+fi
+
 readonly SCRIPT="$0"
 readonly TCP_BIND='127.0.0.1'
 readonly DEFAULT_PORT='5721'

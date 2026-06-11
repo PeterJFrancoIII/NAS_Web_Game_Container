@@ -33,6 +33,30 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
         self.assertEqual(values["ASSETS_DIR"], "/volume2/Data/App_Development/ra2-lan-party/assets")
         self.assertEqual(values["PREFIX1_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player1")
         self.assertEqual(values["PREFIX2_DIR"], "/volume2/Data/App_Development/ra2-lan-party/prefixes/player2")
+        self.assertEqual(values["LOGS_DIR"], "/volume2/Data/App_Development/ra2-lan-party/logs")
+
+    def test_project_specific_nas_paths_stay_inside_ra2_project_root(self):
+        forbidden_parent = "/" + "Data" + "/" + "App_Development"
+        allowed_root = forbidden_parent + "/ra2-lan-party"
+        skipped_dirs = {".git", ".pytest_cache", ".test-tmp", "__pycache__"}
+        skipped_files = {Path(".cursor/rules/project-storage-boundary.mdc")}
+        offenders = []
+
+        for path in PROJECT_ROOT.rglob("*"):
+            relative = path.relative_to(PROJECT_ROOT)
+            if any(part in skipped_dirs for part in relative.parts):
+                continue
+            if relative in skipped_files or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if forbidden_parent in line and allowed_root not in line:
+                    offenders.append(f"{relative}:{line_number}: {line.strip()}")
+
+        self.assertEqual([], offenders)
 
     def test_env_defaults_define_two_browser_clients_and_unique_player_identity(self):
         values = env_values()
@@ -45,12 +69,43 @@ class SynologyEnvironmentContractTest(unittest.TestCase):
         self.assertEqual(values["PLAYER2_WEBRTC_INPUT_PORT"], "6086")
         self.assertEqual(values["PLAYER1_WEBRTC_UDP_MIN"], "62001")
         self.assertEqual(values["PLAYER2_WEBRTC_UDP_MAX"], "62040")
+        self.assertEqual(values["PLAYER1_WEBRTC_VIDEO_UDP_MIN"], "62001")
+        self.assertEqual(values["PLAYER1_WEBRTC_VIDEO_UDP_MAX"], "62010")
+        self.assertEqual(values["PLAYER1_WEBRTC_AUDIO_UDP_MIN"], "62011")
+        self.assertEqual(values["PLAYER1_WEBRTC_AUDIO_UDP_MAX"], "62020")
+        self.assertEqual(values["PLAYER2_WEBRTC_VIDEO_UDP_MIN"], "62021")
+        self.assertEqual(values["PLAYER2_WEBRTC_VIDEO_UDP_MAX"], "62030")
+        self.assertEqual(values["PLAYER2_WEBRTC_AUDIO_UDP_MIN"], "62031")
+        self.assertEqual(values["PLAYER2_WEBRTC_AUDIO_UDP_MAX"], "62040")
+        self.assertEqual(values["WEBRTC_LATENCY_PRESET"], "stable")
+        self.assertEqual(values["WEBRTC_VIDEO_CODEC"], "H264")
+        self.assertEqual(values["WEBRTC_VIDEO_REQUIRE_HW"], "1")
+        self.assertEqual(values["WEBRTC_VIDEO_WIDTH"], "1024")
+        self.assertEqual(values["WEBRTC_VIDEO_HEIGHT"], "768")
+        self.assertEqual(values["WEBRTC_VIDEO_FPS"], "20")
+        self.assertEqual(values["WEBRTC_VIDEO_BITRATE"], "800000")
+        self.assertEqual(values["WEBRTC_VIDEO_RTP_MTU"], "700")
+        self.assertEqual(values["WEBRTC_OFFER_WAIT_SECONDS"], "30")
+        self.assertEqual(values["WEBRTC_ICE_TCP"], "1")
+        self.assertEqual(values["WEBRTC_ICE_UDP"], "0")
+        self.assertEqual(values["WEBRTC_AUDIO_BITRATE"], "96000")
+        self.assertEqual(values["WEBRTC_AUDIO_RATE"], "44100")
         self.assertEqual(values["NAS_LAN_IP"], "192.168.0.193")
         self.assertEqual(values["NAS_PUBLIC_HOSTNAME"], "peterjfrancoiii2.synology.me")
         self.assertIn("/ra2-lan-party/tls", values["TLS_DIR"])
         self.assertEqual(values["DRI_DEVICE"], "/dev/dri")
         self.assertEqual(values["RENDER_GID"], "937")
         self.assertEqual(values["LIBVA_DRIVER_NAME"], "i965")
+        self.assertEqual(values["RA2_MEMORY_PROFILE"], "two-player-low")
+        self.assertEqual(values["RA2_MEM_LIMIT"], "512m")
+        self.assertEqual(values["RA2_SHM_SIZE"], "256m")
+        self.assertEqual(values["RA2_ENABLE_AUDIO_PROXY"], "0")
+        self.assertEqual(values["RA2_ENABLE_LATENCY_PROXY"], "0")
+        self.assertEqual(values["AUDIO_QUEUE_BUFFERS"], "4")
+        self.assertEqual(values["AUDIO_WEBM_CLUSTER_MS"], "150")
+        self.assertEqual(values["RA2_RESTART_POLICY"], "no")
+        self.assertEqual(values["RA2_PIDS_LIMIT"], "256")
+        self.assertEqual(values["RA2_COMPOSE_TRANSCODE"], "0")
         self.assertNotEqual(values["PLAYER1_SERIAL"], values["PLAYER2_SERIAL"])
         self.assertNotEqual(values["PLAYER1_VNC_PASSWORD"], values["PLAYER2_VNC_PASSWORD"])
         self.assertEqual(values["GAME_EXE"], "RA2MD.exe")
@@ -92,6 +147,15 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertIn("subnet: 172.22.20.0/24", compose)
         self.assertIn("gateway: 172.22.20.1", compose)
         self.assertIn("driver: bridge", compose)
+        self.assertIn('restart: "${RA2_RESTART_POLICY:-no}"', compose)
+        self.assertNotIn("cpus:", compose)
+        self.assertIn("pids_limit: ${RA2_PIDS_LIMIT:-256}", compose)
+        self.assertIn('mem_limit: "${RA2_MEM_LIMIT:-512m}"', compose)
+        self.assertIn('shm_size: "${RA2_SHM_SIZE:-256m}"', compose)
+        self.assertIn("PLAYER1_MEM_LIMIT", compose)
+        self.assertIn("PLAYER2_MEM_LIMIT", compose)
+        self.assertIn("RA2_MEMORY_PROFILE", compose)
+        self.assertIn("RA2_ENABLE_AUDIO_PROXY", compose)
 
     def test_compose_exposes_browser_display_ports_without_exposing_vnc_directly(self):
         compose = read("compose.yaml")
@@ -152,10 +216,17 @@ class ComposeTopologyContractTest(unittest.TestCase):
         self.assertNotIn("WEBRTC_ENABLED", compose)
         self.assertNotIn("compose.webrtc.yaml", compose)
         self.assertIn("WEBRTC_ENABLED: \"1\"", overlay)
+        self.assertIn("${DRI_DEVICE:-/dev/dri}:/dev/dri", overlay)
+        self.assertIn("${RENDER_GID:-937}", overlay)
+        self.assertIn("LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}", overlay)
         self.assertIn("${PLAYER1_WEBRTC_SIGNAL_PORT:-6083}:6090/tcp", overlay)
         self.assertIn("${PLAYER2_WEBRTC_SIGNAL_PORT:-6084}:6090/tcp", overlay)
         self.assertIn("${PLAYER1_WEBRTC_INPUT_PORT:-6085}:5731/tcp", overlay)
         self.assertIn("${PLAYER2_WEBRTC_INPUT_PORT:-6086}:5731/tcp", overlay)
+        self.assertIn("WEBRTC_VIDEO_UDP_PORT_MIN: ${PLAYER1_WEBRTC_VIDEO_UDP_MIN:-62001}", overlay)
+        self.assertIn("WEBRTC_AUDIO_UDP_PORT_MIN: ${PLAYER1_WEBRTC_AUDIO_UDP_MIN:-62011}", overlay)
+        self.assertIn("WEBRTC_VIDEO_UDP_PORT_MIN: ${PLAYER2_WEBRTC_VIDEO_UDP_MIN:-62021}", overlay)
+        self.assertIn("WEBRTC_AUDIO_UDP_PORT_MIN: ${PLAYER2_WEBRTC_AUDIO_UDP_MIN:-62031}", overlay)
         self.assertIn("/udp", overlay)
         self.assertIn("./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro", overlay)
 
@@ -231,6 +302,7 @@ class RuntimeImageContractTest(unittest.TestCase):
             "gst-plugins-bad",
             "gst-plugins-ugly",
             "gst-libav",
+            "gst-plugin-va",
             "libva",
             "libva-intel-driver",
             "libva-utils",
@@ -314,17 +386,258 @@ class RuntimeImageContractTest(unittest.TestCase):
         self.assertIn("dispatchSyntheticEvent", cursor_lock)
 
     def test_webrtc_remote_play_uses_xvfb_pulse_and_wss_signaling(self):
+        helper = read("container/webrtc-media-helper.c")
         webrtc = read("container/webrtc-media.py")
         input_proxy = read("container/input-proxy.py")
         remote_js = read("container/remote/remote-play.js")
 
-        self.assertIn("ximagesrc", webrtc)
-        self.assertIn("tcpclientsrc", webrtc)
-        self.assertIn("webrtcbin", webrtc)
-        self.assertIn("WEBRTC_UDP_PORT_MIN", webrtc)
+        self.assertIn("ximagesrc", helper)
+        self.assertIn("tcpclientsrc", helper)
+        self.assertIn("webrtcbin", helper)
+        self.assertIn("WEBRTC_UDP_PORT_MIN", helper)
+        self.assertIn("name=sendrecv", helper)
+        self.assertIn("WEBRTC_VIDEO_CODEC", helper)
+        self.assertIn("WEBRTC_VIDEO_REQUIRE_HW", helper)
+        self.assertIn("vah264enc", helper)
+        self.assertIn("vah265enc", helper)
+        self.assertIn("video/x-h265", helper)
+        self.assertIn("rtph264pay", helper)
+        self.assertIn("rtph265pay", helper)
+        self.assertIn("profile-id=1", helper)
+        self.assertIn("encoding-name=%s", helper)
+        self.assertIn("rawaudioparse", helper)
+        self.assertIn("latency=0", helper)
+        self.assertIn("leaky=downstream", helper)
+        self.assertIn("WEBRTC_MEDIA_HELPER", webrtc)
+        self.assertIn("offer_event", webrtc)
         self.assertIn("xdotool", input_proxy)
+        self.assertIn("WEBRTC_INPUT_BACKEND", input_proxy)
+        self.assertIn("uinput_backend", input_proxy)
         self.assertIn("RTCPeerConnection", remote_js)
         self.assertIn("WebSocket", remote_js)
+        self.assertIn("warnIfHevcUnsupported", remote_js)
+        self.assertIn("transport=", remote_js)
+        self.assertIn("browserSupportsHevc", remote_js)
+        self.assertIn("playoutDelayHint", remote_js)
+        self.assertIn("remoteVideo", remote_js)
+
+    def test_webrtc_bridge_single_client_and_stale_helper_cleanup(self):
+        webrtc = read("container/webrtc-media.py")
+
+        self.assertIn("_stop_stale_helper_children", webrtc)
+        self.assertIn("pkill", webrtc)
+        self.assertIn("rejecting extra client", webrtc)
+        self.assertIn("another client is already connected", webrtc)
+        self.assertIn("stopping helper pid=", webrtc)
+        self.assertIn("helper started pid=", webrtc)
+        self.assertIn("offer ready in", webrtc)
+        self.assertIn("last_client_disconnected", webrtc)
+        self.assertNotIn("self.clients.clear()", webrtc)
+
+    def test_webrtc_latency_preset_and_stable_baseline(self):
+        start = read("container/start-webrtc.sh")
+        compose = read("compose.webrtc.yaml")
+        env_example = read(".env.example")
+
+        self.assertIn("WEBRTC_LATENCY_PRESET", start)
+        self.assertIn("stable)", start)
+        self.assertIn("low)", start)
+        self.assertIn("experimental)", start)
+        self.assertIn("WEBRTC_VIDEO_WIDTH:-1024", start)
+        self.assertIn("WEBRTC_VIDEO_FPS:-24", start)
+        self.assertIn("WEBRTC_VIDEO_BITRATE:-1000000", start)
+        self.assertIn("WEBRTC_LATENCY_PRESET", compose)
+        self.assertIn("WEBRTC_VIDEO_WIDTH:-1024", compose)
+        self.assertIn("WEBRTC_LATENCY_PRESET=stable", env_example)
+        self.assertIn("WEBRTC_VIDEO_CODEC=H264", env_example)
+        self.assertIn("WEBRTC_VIDEO_FPS=20", env_example)
+        self.assertIn("WEBRTC_VIDEO_BITRATE=800000", env_example)
+        self.assertIn("WEBRTC_VIDEO_REQUIRE_HW=1", env_example)
+        self.assertIn("WEBRTC_VIDEO_RTP_MTU=700", env_example)
+        self.assertIn("WEBRTC_ICE_UDP=0", env_example)
+        self.assertIn("RA2_COMPOSE_WEBRTC_UDP=0", env_example)
+        self.assertIn("WEBRTC_INPUT_BACKEND=xdotool", env_example)
+        self.assertIn("UINPUT_DEVICE=/dev/uinput", env_example)
+
+    def test_remote_play_input_rate_limit_and_runtime_stats(self):
+        remote_js = read("container/remote/remote-play.js")
+        input_proxy = read("container/input-proxy.py")
+
+        self.assertIn("INPUT_MOVE_HZ", remote_js)
+        self.assertIn("reportRuntimeStats", remote_js)
+        self.assertIn("frameStalls", remote_js)
+        self.assertIn("requestVideoFrameCallback", remote_js)
+        self.assertIn("paintStalls", remote_js)
+        self.assertIn("video frame stalled", remote_js)
+        self.assertIn("scheduleAutoMediaReconnect", remote_js)
+        self.assertIn("connected with RTP bytes but no decoded dimensions", remote_js)
+        self.assertIn("async function reconnect", remote_js)
+        self.assertEqual(remote_js.count("await createPeerConnection();"), 1)
+        self.assertIn("WEBRTC_INPUT_MOVE_HZ", input_proxy)
+        self.assertIn("move_dropped", input_proxy)
+
+    def test_webrtc_redeploy_and_host_check_scripts_exist(self):
+        redeploy = read("scripts/redeploy-webrtc.sh")
+        host_check = read("scripts/check-low-latency-host.sh")
+        sync = read("scripts/sync-to-nas.sh")
+        safe_repair = read("scripts/safe-repair-launch.sh")
+
+        self.assertIn("redeploy-webrtc", redeploy)
+        self.assertIn("force-recreate", redeploy)
+        self.assertIn("--no-build", redeploy)
+        self.assertIn("H264/90000", redeploy)
+        self.assertIn("VP8/90000", redeploy)
+        self.assertIn("RA2_WEBRTC_BUILD", redeploy)
+        self.assertIn("webrtc-media-helper", host_check)
+        self.assertIn("/dev/dri", host_check)
+        self.assertIn("redeploy-webrtc.sh", sync)
+        self.assertIn("RA2_COMPOSE_WEBRTC_UDP=1", read("scripts/redeploy-webrtc-udp.sh"))
+        self.assertIn("compare-selkies-webrtc.sh", read("docs/SELKIES_EXPERIMENT.md"))
+        self.assertIn("RA2_SAFE_BUILD", safe_repair)
+        self.assertIn("--no-build --force-recreate", safe_repair)
+        self.assertIn("RA2_SAFE_WEBRTC", safe_repair)
+
+    def test_two_player_memory_profile_and_optional_services(self):
+        compose = read("compose.yaml")
+        env_example = read(".env.example")
+        start_webrtc = read("container/start-webrtc.sh")
+        websockify = read("container/start-websockify.sh")
+        audio_proxy = read("container/audio-proxy.sh")
+        latency_proxy = read("container/latency-proxy.sh")
+        x11vnc = read("container/start-x11vnc.sh")
+        host_check = read("scripts/check-low-latency-host.sh")
+        redeploy = read("scripts/redeploy-low-memory.sh")
+
+        self.assertIn("two-player-low", env_example)
+        self.assertIn("RA2_MEM_LIMIT=512m", env_example)
+        self.assertIn("RA2_ENABLE_AUDIO_PROXY=0", env_example)
+        self.assertIn("two-player-low", start_webrtc)
+        self.assertIn("WEBRTC_VIDEO_FPS:-20", start_webrtc)
+        self.assertIn("WEBRTC_VIDEO_BITRATE:-800000", start_webrtc)
+        self.assertIn("RA2_ENABLE_NOVNC_FALLBACK", websockify)
+        self.assertIn("RA2_ENABLE_AUDIO_PROXY", audio_proxy)
+        self.assertIn("RA2_ENABLE_LATENCY_PROXY", latency_proxy)
+        self.assertIn("RA2_ENABLE_NOVNC_FALLBACK", x11vnc)
+        self.assertIn("docker stats --no-stream", host_check)
+        self.assertIn("zombie/defunct", host_check)
+        self.assertIn("$3 ~ /^Z/", host_check)
+        self.assertIn("RA2_MEMORY_STRICT", host_check)
+        self.assertIn("ra2-player-2", redeploy)
+        self.assertIn("RA2_LOW_MEMORY_BUILD", redeploy)
+        self.assertIn("--no-build --force-recreate", redeploy)
+        self.assertIn("VP8/90000", redeploy)
+        self.assertIn("/opt/ra2/webrtc-media-helper", redeploy)
+
+    def test_webrtc_udp_overlay_enables_udp_ice(self):
+        overlay = read("compose.webrtc-udp.yaml")
+        lib = read("scripts/lib.sh")
+
+        self.assertIn("WEBRTC_ICE_UDP: \"1\"", overlay)
+        self.assertIn("WEBRTC_ICE_TCP: \"1\"", overlay)
+        self.assertIn("webrtc_udp_overlay_enabled", lib)
+        self.assertIn("compose.webrtc-udp.yaml", lib)
+
+    def test_selkies_experiment_compose_is_side_by_side(self):
+        compose = read("compose.selkies-experiment.yaml")
+        docs = read("docs/SELKIES_EXPERIMENT.md")
+
+        self.assertIn("ra2-selkies-experiment", compose)
+        self.assertIn("linuxserver/webtop", compose)
+        self.assertIn("container_name: ra2-selkies-experiment", compose)
+        self.assertNotIn("\n  ra2-player-1:\n", compose)
+        self.assertIn("does not affect", docs.lower())
+
+    def test_moonlight_experiment_compose_files_are_side_by_side(self):
+        sunshine = read("compose.sunshine.yaml")
+        wolf = read("compose.wolf.yaml")
+        tailscale = read("compose.tailscale.yaml")
+        docs = read("docs/MOONLIGHT_EXPERIMENT.md")
+
+        self.assertIn("ra2-sunshine-experiment", sunshine)
+        self.assertIn("linuxserver/sunshine", sunshine)
+        self.assertIn("network_mode: host", sunshine)
+        self.assertNotIn("\n  ra2-player-1:\n", sunshine)
+
+        self.assertIn("ra2-wolf-experiment", wolf)
+        self.assertIn("games-on-whales/wolf", wolf)
+        self.assertIn("/var/run/docker.sock", wolf)
+        self.assertIn("device_cgroup_rules", wolf)
+        self.assertIn("/run/udev", wolf)
+        self.assertNotIn("\n  ra2-player-1:\n", wolf)
+
+        self.assertIn("ra2-tailscale", tailscale)
+        self.assertIn("tailscale/tailscale", tailscale)
+        self.assertIn("TAILSCALE_AUTHKEY", tailscale)
+
+        self.assertIn("primary target", docs.lower())
+        self.assertIn("check-moonlight-ready.sh", docs)
+        self.assertIn("compare-moonlight-webrtc.sh", docs)
+
+    def test_moonlight_and_tailscale_overlays_in_lib_sh(self):
+        lib = read("scripts/lib.sh")
+        env = read(".env.example")
+
+        self.assertIn("moonlight_sunshine_overlay_enabled", lib)
+        self.assertIn("moonlight_wolf_overlay_enabled", lib)
+        self.assertIn("tailscale_overlay_enabled", lib)
+        self.assertIn("compose.sunshine.yaml", lib)
+        self.assertIn("compose.wolf.yaml", lib)
+        self.assertIn("compose.tailscale.yaml", lib)
+        self.assertIn("RA2_COMPOSE_MOONLIGHT=0", env)
+        self.assertIn("RA2_COMPOSE_WOLF=0", env)
+        self.assertIn("RA2_COMPOSE_TAILSCALE=0", env)
+        self.assertIn("RA2_COMPOSE_SELKIES=0", env)
+        self.assertIn("selkies_overlay_enabled", lib)
+        self.assertIn("ultra_overlay_enabled", lib)
+        self.assertIn("compose.ultra.yaml", lib)
+        self.assertIn("RA2_COMPOSE_ULTRA=0", env)
+        self.assertIn("RA2_PRODUCTION_RAM_MIB=6144", env)
+
+    def test_consolidated_architecture_docs_and_boot_scripts(self):
+        arch = read("docs/CONSOLIDATED_ARCHITECTURE.md")
+        boot = read("scripts/dsm-boot-task.sh")
+        uinput = read("scripts/enable-uinput.sh")
+        selkies_deploy = read("scripts/redeploy-profile-selkies.sh")
+
+        self.assertIn("0 — Browser (primary)", arch)
+        self.assertIn("Ultra Arch", arch)
+        self.assertIn("redeploy-moonlight-poc.sh", arch)
+        self.assertIn("prepare-streaming-session.sh", arch)
+        self.assertIn("Deferred", arch)
+        self.assertIn("modprobe uinput", boot)
+        self.assertIn("videodriver", boot)
+        self.assertIn("modprobe uinput", uinput)
+        self.assertIn("RA2_COMPOSE_SELKIES=1", selkies_deploy)
+
+    def test_webrtc_ice_reachability_and_host_prereq_scripts_exist(self):
+        ice = read("scripts/check-webrtc-ice-reachability.sh")
+        prereq = read("scripts/check-host-prerequisites.sh")
+        moonlight = read("scripts/check-moonlight-ready.sh")
+        tailscale = read("scripts/check-tailscale-direct.sh")
+
+        self.assertIn("WEBRTC_ICE_CANDIDATE_HOST", ice)
+        self.assertIn("62001-62040", ice)
+        self.assertIn("check-transcode.sh", prereq)
+        self.assertIn("6144", prereq)
+        self.assertIn("ra2-sunshine-experiment", moonlight)
+        self.assertIn("ra2-wolf-experiment", moonlight)
+        self.assertIn("via DERP", tailscale)
+        self.assertIn("41641", read("docs/TAILSCALE.md"))
+
+    def test_remote_play_reports_actionable_ice_failures(self):
+        remote_js = read("container/remote/remote-play.js")
+        remote_html = read("container/remote/remote.html")
+        media_py = read("container/webrtc-media.py")
+        helper_c = read("container/webrtc-media-helper.c")
+
+        self.assertIn("buildIceFailureHint", remote_js)
+        self.assertIn("showIceFailureOverlay", remote_js)
+        self.assertIn("noteRemoteCandidate", remote_js)
+        self.assertIn("check-webrtc-ice-reachability.sh", remote_js)
+        self.assertIn("MOONLIGHT_EXPERIMENT", remote_js)
+        self.assertIn("noVNC admin fallback", remote_html)
+        self.assertIn("port {port}", media_py)
+        self.assertIn("local ICE candidate", helper_c)
 
     def test_shell_scripts_have_valid_syntax(self):
         checks = [
@@ -349,6 +662,28 @@ class RuntimeImageContractTest(unittest.TestCase):
             ("sh", "-n", PROJECT_ROOT / "scripts/check-av-sync.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/apply-serial-fix.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/check-webrtc-ready.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-webrtc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-low-memory.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-low-latency-host.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-webrtc-udp.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/compare-selkies-webrtc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-webrtc-ice-reachability.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-host-prerequisites.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-moonlight-ready.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-tailscale-direct.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/compare-moonlight-webrtc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-moonlight-poc.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-profile-selkies.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/dsm-boot-task.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/enable-uinput.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/prepare-streaming-session.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/redeploy-ultra.sh"),
+            ("sh", "-n", PROJECT_ROOT / "scripts/check-ultra-ready.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-game-ultra.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-stream-gateway.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/healthcheck-ultra.sh"),
+            ("bash", "-n", PROJECT_ROOT / "container/entrypoint-ultra.sh"),
+            ("sh", "-n", PROJECT_ROOT / "container/start-x11vnc.sh"),
             ("sh", "-n", PROJECT_ROOT / "container/start-webrtc.sh"),
             ("sh", "-n", PROJECT_ROOT / "container/start-input-proxy.sh"),
             ("sh", "-n", PROJECT_ROOT / "scripts/admin-rebuild-check.sh"),
@@ -414,7 +749,9 @@ class EntrypointContractTest(unittest.TestCase):
         self.assertIn("/bin/bash /opt/ra2/patch-novnc.sh /opt/novnc", entrypoint)
         self.assertIn("remote.html", entrypoint)
         self.assertIn("x11vnc -storepasswd \"$VNC_PASSWORD\" /tmp/x11vnc.pass", entrypoint)
-        self.assertIn("-rfbauth /tmp/x11vnc.pass", supervisor)
+        x11vnc = read("container/start-x11vnc.sh")
+        self.assertIn("-rfbauth /tmp/x11vnc.pass", x11vnc)
+        self.assertIn("/bin/sh /opt/ra2/start-x11vnc.sh", supervisor)
         self.assertNotIn("-passwd %(ENV_VNC_PASSWORD)s", supervisor)
 
 
@@ -437,6 +774,9 @@ class DisplayPipelineContractTest(unittest.TestCase):
             self.assertIn(program, supervisor)
         self.assertIn("/bin/sh /opt/ra2/start-webrtc.sh", supervisor)
         self.assertIn("/bin/sh /opt/ra2/start-input-proxy.sh", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/start-x11vnc.sh", supervisor)
+        self.assertIn("autorestart=unexpected", supervisor)
+        self.assertIn("exitcodes=0", supervisor)
         self.assertIn("Xvfb :1 -screen 0 %(ENV_RESOLUTION)sx16", supervisor)
         websockify = read("container/start-websockify.sh")
         self.assertIn('RUNNER="/opt/novnc/utils/websockify/run"', websockify)
@@ -567,13 +907,31 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("check-av-sync.sh", verifier)
         self.assertIn("ensure-tls.sh", verifier)
         self.assertIn("check-webrtc-ready.sh", verifier)
-        self.assertIn("WebRTC remote play URLs", verifier)
+        self.assertIn("check-host-prerequisites.sh", verifier)
+        self.assertIn("check-moonlight-ready.sh", verifier)
+        self.assertIn("check-webrtc-ice-reachability.sh", verifier)
+        self.assertIn("WebRTC legacy fallback URLs", verifier)
 
     def test_lib_sh_supports_opt_in_webrtc_overlay(self):
         lib = read("scripts/lib.sh")
         self.assertIn("webrtc_overlay_enabled", lib)
         self.assertIn("compose.webrtc.yaml", lib)
         self.assertIn("RA2_COMPOSE_WEBRTC", lib)
+
+    def test_lib_sh_supports_opt_in_ultra_overlay(self):
+        lib = read("scripts/lib.sh")
+        self.assertIn("ultra_overlay_enabled", lib)
+        self.assertIn("compose.ultra.yaml", lib)
+        self.assertIn("RA2_COMPOSE_ULTRA", lib)
+
+    def test_lib_sh_keeps_transcode_overlay_opt_in(self):
+        lib = read("scripts/lib.sh")
+        env = read(".env.example")
+
+        self.assertIn("transcode_overlay_enabled", lib)
+        self.assertIn("RA2_COMPOSE_TRANSCODE:-0", lib)
+        self.assertIn('= "1"', lib)
+        self.assertIn("RA2_COMPOSE_TRANSCODE=0", env)
 
     def test_bootstrap_launch_ensures_tls_and_uses_compose_helper(self):
         bootstrap = read("scripts/bootstrap-nas.sh")
@@ -616,6 +974,243 @@ class AutomationScriptsContractTest(unittest.TestCase):
         self.assertIn("start-websockify.sh", compose)
 
 
+class UltraStreamingContractTest(unittest.TestCase):
+    def test_ultra_compose_uses_minimal_image_and_single_port_gateway(self):
+        compose = read("compose.ultra.yaml")
+        dockerfile = read("container/Dockerfile.ultra")
+        entrypoint = read("container/entrypoint-ultra.sh")
+        minidump = read("container/winedbg-minidump.sh")
+        supervisor = read("container/supervisord.ultra.conf")
+        env = env_values()
+
+        self.assertIn("ra2-lan-party:ultra", compose)
+        self.assertIn("container/Dockerfile.ultra", compose)
+        self.assertIn("WINE_VARIANT: ${WINE_VARIANT:-amd64-wow64}", compose)
+        self.assertIn("WINE_ARCH: ${WINE_ARCH:-win64}", compose)
+        self.assertIn("WINE_ENABLE_MULTILIB: ${WINE_ENABLE_MULTILIB:-0}", compose)
+        self.assertIn("ARG WINE_ARCH=win64", dockerfile)
+        self.assertIn("ARG WINE_ENABLE_MULTILIB=0", dockerfile)
+        self.assertIn("WINEARCH=${WINE_ARCH}", dockerfile)
+        self.assertIn("[multilib]", dockerfile)
+        self.assertIn("lib32-alsa-lib", dockerfile)
+        self.assertIn('WINE_ARCH="${WINEARCH:-win64}"', entrypoint)
+        self.assertIn('if [ "$WINE_ARCH" = "win32" ]; then', entrypoint)
+        self.assertIn('[ ! -f "${WINEPREFIX}/drive_c/windows/syswow64/kernel32.dll" ]', entrypoint)
+        self.assertIn("configure_app_compat", entrypoint)
+        self.assertIn("RA2_WINE_APP_VERSION:-win98", entrypoint)
+        self.assertIn("AppDefaults\\\\${exe}", entrypoint)
+        self.assertIn('configure_app_compat "gamemd.exe"', entrypoint)
+        self.assertIn("x-ra2-ultra-env", compose)
+        self.assertIn("ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}", compose)
+        self.assertIn("ULTRA_VIDEO_CODEC: ${ULTRA_VIDEO_CODEC:-H264}", compose)
+        self.assertIn("RA2_GAME_CPUSET: ${PLAYER1_GAME_CPUSET:-0}", compose)
+        self.assertIn("RA2_GAME_CPUSET: ${PLAYER2_GAME_CPUSET:-1}", compose)
+        self.assertIn('RA2_ENABLE_NOVNC_FALLBACK: "0"', compose)
+        self.assertIn('WEBRTC_ENABLED: "0"', compose)
+        self.assertIn("ra2-stream-gateway.py", compose)
+        self.assertIn("start-game-ultra.sh", compose)
+        self.assertIn("winedbg-minidump.sh", compose)
+        self.assertIn("winedbg-minidump.sh", dockerfile)
+        self.assertIn("winedbg --auto", minidump)
+        self.assertIn("winedbg --minidump", minidump)
+        self.assertIn("timeout 20", minidump)
+        self.assertIn("latest-winedbg-minidump.log", minidump)
+        self.assertIn("AeDebug", entrypoint)
+        self.assertIn("/bin/sh /opt/ra2/winedbg-minidump.sh %ld %ld", entrypoint)
+        self.assertIn("ShowCrashDialog", entrypoint)
+        self.assertNotIn("linuxserver/webtop", compose)
+        self.assertNotIn("x11vnc", supervisor)
+        self.assertNotIn("websockify", supervisor)
+        self.assertNotIn("webrtc-media", supervisor)
+        self.assertIn("[program:stream-gateway]", supervisor)
+        self.assertIn("[program:game]", supervisor)
+        self.assertIn("/bin/sh /opt/ra2/start-game-ultra.sh", supervisor)
+        self.assertEqual(env["ULTRA_VIDEO_FPS"], "24")
+        self.assertEqual(env["ULTRA_VIDEO_CODEC"], "H264")
+        self.assertEqual(env["ULTRA_AUDIO_CODEC"], "opus")
+        self.assertEqual(env["ULTRA_AUDIO_BITRATE"], "96000")
+        self.assertEqual(env["ULTRA_AUDIO_RATE"], "44100")
+        self.assertEqual(env["ULTRA_AUDIO_TRANSPORT_RATE"], "48000")
+        self.assertEqual(env["RA2_COMPOSE_ULTRA"], "0")
+
+    def test_ultra_gateway_and_helper_implement_wss_webcodecs_path(self):
+        compose = read("compose.ultra.yaml")
+        gateway = read("container/ra2-stream-gateway.py")
+        helper = read("container/stream-helper.c")
+        healthcheck = read("container/healthcheck-ultra.sh")
+        start = read("container/start-stream-gateway.sh")
+        game = read("container/start-game-ultra.sh")
+        ultra_js = read("container/remote-ultra/ultra-play.js")
+        docs = read("docs/ULTRA_LIGHT_ARCH_STREAMING.md")
+
+        self.assertIn("process_request", gateway)
+        self.assertIn("/stream", gateway)
+        self.assertIn("VideoDecoder", ultra_js)
+        self.assertIn("WebCodecs", docs)
+        self.assertIn("24 fps", docs.lower())
+        self.assertIn("ULTRA_VIDEO_CODEC", start)
+        self.assertIn("ULTRA_AUDIO_CODEC", start)
+        self.assertIn("ULTRA_AUDIO_TRANSPORT_RATE", start)
+        self.assertIn("opusenc", helper)
+        self.assertIn("ULTRA_AUDIO_BITRATE", helper)
+        self.assertIn("ULTRA_AUDIO_TRANSPORT_RATE", helper)
+        self.assertIn("vah264enc", helper)
+        self.assertIn("appsink name=vsink", helper)
+        self.assertIn("zombie_game_count", game)
+        self.assertIn("gamemd.exe", game)
+        self.assertIn("dump_lockup_report", game)
+        self.assertIn("latest-crash.log", game)
+        self.assertIn("crash-", game)
+        self.assertIn("ULTRA_GAME_LOG_ROOT", game)
+        self.assertIn("ULTRA_WINEDEBUG", game)
+        self.assertIn("wine-current.log", game)
+        self.assertIn("Wine stderr/stdout", game)
+        self.assertIn("recent Wine minidumps", game)
+        self.assertIn("latest-winedbg-minidump.log", game)
+        self.assertIn("Wine minidump helper", game)
+        self.assertIn("RA2_GAME_CPUSET", game)
+        self.assertIn("PLAYER_ID} - 1", game)
+        self.assertIn('taskset -c "$GAME_CPUSET"', game)
+        self.assertIn("pin_game_affinity", game)
+        self.assertIn('taskset -pc "$GAME_CPUSET"', game)
+        self.assertIn("cpuset=", game)
+        self.assertIn("ULTRA_GAME_WORK_DIR", game)
+        self.assertIn("game-work", game)
+        self.assertIn("prepare_game_work_dir", game)
+        self.assertIn("GAME_OUTPUT_FILES", game)
+        self.assertIn('ln -s "$path" "$GAME_DIR/$base"', game)
+        self.assertIn('"${GAME_DIR}/except.txt"', game)
+        self.assertIn('wine "${GAME_DIR}/${GAME_EXE}"', game)
+        self.assertIn('player${PLAYER_ID:-unknown}', game)
+        self.assertIn("matching processes", game)
+        self.assertIn("recent input events", game)
+        self.assertIn("ULTRA_GAME_LOG_ROOT", compose)
+        self.assertIn("ra2-logs-root", compose)
+        self.assertIn("LOGS_DIR", compose)
+        self.assertIn("ULTRA_GAME_LOG_ROOT", gateway)
+        self.assertIn("input-events.log", gateway)
+        self.assertIn("ULTRA_GAME_PROCESS", healthcheck)
+        self.assertIn("$1 ~ /^Z/", healthcheck)
+
+    def test_ultra_gateway_normalizes_browser_arrow_keys_for_xdotool(self):
+        gateway = read("container/ra2-stream-gateway.py")
+
+        self.assertIn('"ArrowUp": "Up"', gateway)
+        self.assertIn('"ArrowDown": "Down"', gateway)
+        self.assertIn('"ArrowLeft": "Left"', gateway)
+        self.assertIn('"ArrowRight": "Right"', gateway)
+        self.assertIn('"Backspace": "BackSpace"', gateway)
+        self.assertIn('"Enter": "Return"', gateway)
+        self.assertIn("_xdotool_key(key)", gateway)
+
+    def test_ultra_input_releases_held_keys_on_blur_and_disconnect(self):
+        gateway = read("container/ra2-stream-gateway.py")
+        ultra_js = read("container/remote-ultra/ultra-play.js")
+
+        self.assertIn("active_keys", gateway)
+        self.assertIn("OPPOSITE_DIRECTION_KEYS", gateway)
+        self.assertIn("ignored-duplicate", gateway)
+        self.assertIn("release_opposite", gateway)
+        self.assertIn("release_all_keys", gateway)
+        self.assertIn('"keyup_all"', gateway)
+        self.assertIn('session.input.release_all_keys()', gateway)
+        self.assertIn("pressedKeys", ultra_js)
+        self.assertNotIn("guardedKeys", ultra_js)
+        self.assertNotIn("GUARDED_KEYS", gateway)
+        self.assertNotIn("guarded-key", gateway)
+        self.assertIn("if (pressedKeys.has(e.key))", ultra_js)
+        self.assertIn("releasePressedKeys", ultra_js)
+        self.assertIn('window.addEventListener("blur", releasePressedKeys)', ultra_js)
+        self.assertIn('window.addEventListener("pagehide", releasePressedKeys)', ultra_js)
+        self.assertIn("document.hidden", ultra_js)
+
+    def test_ultra_forwards_all_mouse_buttons_and_wheel(self):
+        html = read("container/remote-ultra/index.html")
+        gateway = read("container/ra2-stream-gateway.py")
+        ultra_js = read("container/remote-ultra/ultra-play.js")
+
+        self.assertIn("object-fit: contain", html)
+        self.assertIn("canvasContentRect", ultra_js)
+        self.assertIn("clamp((e.clientX - rect.left) / rect.width, 0, 1)", ultra_js)
+        self.assertIn("clamp((e.clientY - rect.top) / rect.height, 0, 1)", ultra_js)
+        self.assertIn('sendInput({ type: "wheel", deltaY: e.deltaY })', ultra_js)
+        self.assertNotIn('lastInput = "wheel guarded"', ultra_js)
+        self.assertNotIn("button ${e.button + 1} ignored", ultra_js)
+        self.assertIn("_clamp_int", gateway)
+        self.assertIn("VIDEO_WIDTH - 1", gateway)
+        self.assertIn("VIDEO_HEIGHT - 1", gateway)
+        self.assertIn("_clamp_int(event.get(\"button\", 1), 1, 9)", gateway)
+        self.assertIn('if kind == "wheel":', gateway)
+        self.assertIn('direction = "4" if event.get("deltaY", 0) < 0 else "5"', gateway)
+        self.assertIn('self._xdotool(["click", direction])', gateway)
+        self.assertNotIn("guarded-wheel", gateway)
+        self.assertIn("last_wheel_at", gateway)
+        self.assertNotIn("ignored-non-left-button", gateway)
+        self.assertIn('self._xdotool(["mousedown", str(button)])', gateway)
+        self.assertIn('self._xdotool(["mouseup", str(button)])', gateway)
+
+    def test_ultra_transport_menu_and_settings_protocol(self):
+        html = read("container/remote-ultra/index.html")
+        gateway = read("container/ra2-stream-gateway.py")
+        ultra_js = read("container/remote-ultra/ultra-play.js")
+        docs = read("docs/ULTRA_LIGHT_ARCH_STREAMING.md")
+
+        self.assertIn("controlPanel", html)
+        self.assertIn("videoQuality", html)
+        self.assertIn("videoCodec", html)
+        self.assertIn("videoBitrate", html)
+        self.assertIn('<option value="900000" selected>900 kbps</option>', html)
+        self.assertIn('<option value="2000000">2.0 Mbps</option>', html)
+        self.assertIn("H.265 / HEVC (disabled - black screen)", html)
+        self.assertIn("audioEncoder", html)
+        self.assertIn("audioBitrate", html)
+        self.assertIn("audioQuality", html)
+        self.assertIn("audioTest", html)
+        self.assertIn("inputMoveHz", html)
+        self.assertIn("transportStatus", html)
+        self.assertIn('<option value="opus" selected>Opus low-latency</option>', html)
+        self.assertIn('<option value="96000" selected>96 kbps</option>', html)
+        self.assertIn("validate_settings", gateway)
+        self.assertIn("ALLOWED_VIDEO_BITRATES", gateway)
+        self.assertIn('"videoBitrate"', gateway)
+        self.assertIn("H265 currently produces a black browser stream", gateway)
+        self.assertIn("return False", gateway)
+        self.assertIn('"fallbacks"', gateway)
+        self.assertIn('"available"', gateway)
+        self.assertIn('audioEncoder: "opus"', ultra_js)
+        self.assertIn('videoBitrate: "900000"', ultra_js)
+        self.assertIn("videoBitrateEl", ultra_js)
+        self.assertIn("available.videoBitrate", ultra_js)
+        self.assertIn('audioBitrate: "96000"', ultra_js)
+        self.assertIn("AudioDecoder", ultra_js)
+        self.assertIn('format: "f32-planar"', ultra_js)
+        self.assertIn("supportsOpusAudioDecoder", ultra_js)
+        self.assertIn("browserCompatibleSettings", ultra_js)
+        self.assertIn("Opus AudioDecoder unsupported in this browser", ultra_js)
+        self.assertIn("unlockAudio", ultra_js)
+        self.assertIn("playTestTone", ultra_js)
+        self.assertIn("audioOutputStatus", ultra_js)
+        self.assertIn("audioPeak", ultra_js)
+        self.assertIn("playElementTone", ultra_js)
+        self.assertIn("audio/wav", ultra_js)
+        self.assertIn("webkitAudioContext", ultra_js)
+        self.assertIn("audioTransportRate", ultra_js)
+        self.assertIn("localStorage", ultra_js)
+        self.assertIn("settings", ultra_js)
+        self.assertIn("apply on reconnect", docs.lower())
+
+    def test_ultra_deploy_and_check_scripts_exist(self):
+        redeploy = read("scripts/redeploy-ultra.sh")
+        check = read("scripts/check-ultra-ready.sh")
+
+        self.assertIn("RA2_COMPOSE_ULTRA=1", redeploy)
+        self.assertIn("stream-helper", redeploy)
+        self.assertIn("websockify should be disabled", redeploy)
+        self.assertIn("RA2_COMPOSE_ULTRA", check)
+        self.assertIn("vah264enc", check)
+        self.assertIn("ULTRA_LIGHT_ARCH_STREAMING.md", check)
+
+
 class DocumentationContractTest(unittest.TestCase):
     def test_deployment_docs_cover_manual_gates_and_player_urls(self):
         docs = read("docs/DEPLOY_SYNOLOGY.md")
@@ -644,6 +1239,15 @@ class DocumentationContractTest(unittest.TestCase):
             "UDP `62001-62040`",
             "secure context",
             "2 GB DS225+ is an OOM risk",
+            "6 GB",
+            "docs/MOONLIGHT_EXPERIMENT.md",
+            "docs/CONSOLIDATED_ARCHITECTURE.md",
+            "docs/TAILSCALE.md",
+            "compose.sunshine.yaml",
+            "compose.wolf.yaml",
+            "check-host-prerequisites.sh",
+            "check-webrtc-ice-reachability.sh",
+            "legacy browser fallback",
             "sh scripts/bootstrap-nas.sh prepare",
             "sh scripts/validate-env.sh",
         ]:
@@ -653,7 +1257,14 @@ class DocumentationContractTest(unittest.TestCase):
         readme = read("README.md")
 
         self.assertIn("No copyrighted game files", readme)
-        self.assertIn("docker compose --env-file .env up -d --build", readme)
+        self.assertIn("sh scripts/bootstrap-nas.sh launch", readme)
+        self.assertIn("docs/MOONLIGHT_EXPERIMENT.md", readme)
+        self.assertIn("docs/ULTRA_LIGHT_ARCH_STREAMING.md", readme)
+        self.assertIn("Ultra Arch Browser", readme)
+        self.assertIn("docs/TAILSCALE.md", readme)
+        self.assertIn("compose.sunshine.yaml", readme)
+        self.assertIn("legacy browser fallback", readme.lower())
+        self.assertIn("RA2_COMPOSE_TRANSCODE=1", readme)
         self.assertIn("compose.https.yaml", readme)
         self.assertIn("docs/HTTPS.md", readme)
         self.assertIn("172.22.20.11", readme)
