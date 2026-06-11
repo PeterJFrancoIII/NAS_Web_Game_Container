@@ -55,6 +55,7 @@ The browser client includes a collapsible **Transport** panel (top-left). Settin
 |---------|---------|
 | Video quality | `low` (20 fps), `balanced` (24 fps), `sharp` (24 fps, higher bitrate) |
 | Hardware encoder | H.264 VAAPI (default), H.265 if server hardware supports it |
+| Video bitrate | 300 kbps through 2.0 Mbps; use lower values to test H.265 efficiency |
 | Audio encoder | Opus low-latency (default), PCM fallback |
 | Audio quality | 64 / 96 / 128 kbps plus 44.1 kHz or 48 kHz source audio |
 | Input polling | 60 / 125 / 200 Hz mouse move rate |
@@ -86,6 +87,8 @@ ULTRA_AUDIO_TRANSPORT_RATE=48000
 H.265 is a test path. Set `ULTRA_H265_TEST_ENABLED=1` before trying it in the transport menu. If no HEVC encoder is available, or the flag is off, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
 
 Current H.265 test result: Chromium WebCodecs renders the stream when the client uses `hev1.1.6.L93.B0`. The DS225+ stack does not expose QSV/MSDK GStreamer factories (`qsvh265enc` / `msdkh265enc`), but it does expose VA-API H.265 through `vah265enc` on Intel Gemini Lake.
+
+Do not expect H.265 to look dramatically different at the exact same target bitrate. The hardware encoder is rate-controlled, so the useful test is whether H.265 at 300-600 kbps looks comparable to H.264 at 600-900 kbps. The transport panel reports live encoded video kbps to make that comparison visible.
 
 ## H.265 / QSV diagnostics
 

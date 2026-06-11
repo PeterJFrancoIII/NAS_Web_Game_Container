@@ -130,6 +130,8 @@ Current ultra defaults:
 
 H.265 is not the default golden path. It is available as a test mode behind `ULTRA_H265_TEST_ENABLED=1`; Chromium WebCodecs requires the `hev1.1.6.L93.B0` codec string, and the current NAS uses VA-API `vah265enc` rather than QSV/MSDK factories. Keep H.264 as the default until H.265 has longer gameplay stability coverage. For H.265/QSV work, start with `video-diagnostics.log` under each player's log directory.
 
+Compare H.265 using lower target bitrates, not the same bitrate as H.264. The VA encoder is rate-controlled, so equal target bitrates produce similar bandwidth and may look visually identical on low-motion RA2 screens.
+
 ## Diagnostics
 
 Per-player logs are kept under:

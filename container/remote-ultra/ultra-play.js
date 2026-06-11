@@ -53,6 +53,7 @@
   let rttMs = 0;
   let decodeQueue = 0;
   let videoMessages = 0;
+  let videoBytes = 0;
   let audioMessages = 0;
   let audioPlayed = 0;
   let audioErrors = 0;
@@ -71,6 +72,7 @@
   let audioOutputStatus = "not initialized";
   let audioPeak = 0;
   let lastAudioAt = 0;
+  let streamStatsStartedAt = performance.now();
 
   function loadSettings() {
     try {
@@ -146,6 +148,8 @@
 
   function updateTransportStatus(extraLines = []) {
     const settings = currentSettingsFromUi();
+    const statsSeconds = Math.max((performance.now() - streamStatsStartedAt) / 1000, 0.001);
+    const encodedVideoKbps = (videoBytes * 8) / statsSeconds / 1000;
     const lines = [
       "RA2 Ultra transport",
       `connection: ${connectionState}`,
@@ -170,6 +174,7 @@
     lines.push(
       `decoder: ${activeVideoDecoderCodec}`,
       `video: ${streamWidth}x${streamHeight}`,
+      `encoded video: ${encodedVideoKbps.toFixed(0)} kbps`,
       `rx: v=${videoMessages} a=${audioMessages}`,
       `audio: state=${audioContext ? audioContext.state : "none"} played=${audioPlayed} err=${audioErrors}`,
       `audio output: ${audioOutputStatus}`,
@@ -518,6 +523,7 @@
   function decodeVideo(msg) {
     videoMessages += 1;
     const data = b64ToU8(msg.data);
+    videoBytes += data.length;
     if (!configured && msg.key) {
       try {
         videoDecoder.configure({
@@ -803,6 +809,8 @@
         connectionState = "stream starting";
         pendingSettings = false;
         pendingNotice.classList.remove("visible");
+        videoBytes = 0;
+        streamStatsStartedAt = performance.now();
         if (msg.width && msg.height) {
           streamWidth = msg.width;
           streamHeight = msg.height;
