@@ -72,5 +72,15 @@ run_docker exec "$SERVICE" sh -lc 'env | grep -E "^ULTRA_VIDEO_|^ULTRA_GATEWAY_|
 section "Memory"
 run_docker stats --no-stream "$SERVICE" 2>/dev/null || true
 
-printf '\nUltra profile checks complete. Open https://<NAS>:6081/ in Chromium.\n'
+printf '\nUltra profile checks complete.'
+case "$SERVICE" in
+  ra2-player-2)
+    port="$(read_env_value PLAYER2_HTTP_PORT 6082 "$ENV_FILE")"
+    printf ' Open https://<NAS>:%s/ in Chromium.\n' "$port"
+    ;;
+  *)
+    port="$(read_env_value PLAYER1_HTTP_PORT 6081 "$ENV_FILE")"
+    printf ' Open https://<NAS>:%s/ in Chromium.\n' "$port"
+    ;;
+esac
 printf 'See docs/ULTRA_LIGHT_ARCH_STREAMING.md\n'

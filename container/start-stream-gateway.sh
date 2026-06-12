@@ -31,7 +31,7 @@ esac
 # The native stream size follows the Xvfb display (RESOLUTION) so changing the
 # display resolution propagates everywhere; explicit ULTRA_VIDEO_WIDTH/HEIGHT
 # overrides remain possible for letterboxed encodes.
-export RESOLUTION="${RESOLUTION:-1024x768}"
+export RESOLUTION="${RESOLUTION:-960x720}"
 export ULTRA_VIDEO_WIDTH="${ULTRA_VIDEO_WIDTH:-${RESOLUTION%x*}}"
 export ULTRA_VIDEO_HEIGHT="${ULTRA_VIDEO_HEIGHT:-${RESOLUTION#*x}}"
 
@@ -39,9 +39,14 @@ export ULTRA_VIDEO_KEYFRAME_SECONDS="${ULTRA_VIDEO_KEYFRAME_SECONDS:-1}"
 export ULTRA_VIDEO_REQUIRE_HW="${ULTRA_VIDEO_REQUIRE_HW:-1}"
 export ULTRA_AUDIO_CODEC="${ULTRA_AUDIO_CODEC:-opus}"
 export ULTRA_AUDIO_BITRATE="${ULTRA_AUDIO_BITRATE:-64000}"
-export ULTRA_AUDIO_FRAME_MS="${ULTRA_AUDIO_FRAME_MS:-10}"
-export ULTRA_AUDIO_RATE="${ULTRA_AUDIO_RATE:-44100}"
-export ULTRA_AUDIO_TRANSPORT_RATE="${ULTRA_AUDIO_TRANSPORT_RATE:-48000}"
+export ULTRA_AUDIO_FRAME_MS="${ULTRA_AUDIO_FRAME_MS:-20}"
+if [ "${ULTRA_AUDIO_CODEC:-opus}" = "opus" ]; then
+  export ULTRA_AUDIO_RATE="${ULTRA_AUDIO_RATE:-48000}"
+  export ULTRA_AUDIO_TRANSPORT_RATE="${ULTRA_AUDIO_TRANSPORT_RATE:-48000}"
+else
+  export ULTRA_AUDIO_RATE="${ULTRA_AUDIO_RATE:-44100}"
+  export ULTRA_AUDIO_TRANSPORT_RATE="${ULTRA_AUDIO_TRANSPORT_RATE:-$ULTRA_AUDIO_RATE}"
+fi
 export ULTRA_VIDEO_DIAGNOSTICS="${ULTRA_VIDEO_DIAGNOSTICS:-1}"
 export ULTRA_STREAM_CPUSET="${ULTRA_STREAM_CPUSET:-}"
 export ULTRA_VIDEO_GPU_SCALE="${ULTRA_VIDEO_GPU_SCALE:-1}"
@@ -66,6 +71,29 @@ case "${ULTRA_GATEWAY_TLS:-}" in
     fi
     ;;
 esac
+
+HELPER_SRC="/opt/ra2/stream-helper.c"
+ULTRA_STREAM_HELPER="${ULTRA_STREAM_HELPER:-/opt/ra2/stream-helper}"
+# Synology tmpfs mounts are noexec; compile/run the helper on the container layer.
+case "$ULTRA_STREAM_HELPER" in
+  /tmp/*|/opt/ra2/ram/*)
+    ULTRA_STREAM_HELPER="/opt/ra2/stream-helper"
+    ;;
+esac
+
+if [ -f "$HELPER_SRC" ] && command -v gcc >/dev/null 2>&1 && command -v pkg-config >/dev/null 2>&1; then
+  if [ ! -x "$ULTRA_STREAM_HELPER" ] || [ "$HELPER_SRC" -nt "$ULTRA_STREAM_HELPER" ]; then
+    printf '[ultra-gateway] rebuilding stream helper from %s\n' "$HELPER_SRC" >&2
+    if gcc "$HELPER_SRC" -o "$ULTRA_STREAM_HELPER" \
+      $(pkg-config --cflags --libs gstreamer-1.0 gstreamer-app-1.0) 2>/tmp/stream-helper-build.log; then
+      chmod +x "$ULTRA_STREAM_HELPER" 2>/dev/null || true
+    else
+      tail -20 /tmp/stream-helper-build.log >&2 || true
+      printf '[ultra-gateway] stream helper rebuild failed; using existing binary\n' >&2
+    fi
+  fi
+fi
+export ULTRA_STREAM_HELPER
 
 if [ ! -x "$ULTRA_STREAM_HELPER" ]; then
   printf '[ultra-gateway] missing stream helper at %s\n' "$ULTRA_STREAM_HELPER" >&2

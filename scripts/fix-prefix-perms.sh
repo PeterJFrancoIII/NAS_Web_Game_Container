@@ -12,7 +12,7 @@ PREFIX1="${PREFIX1_DIR:-$PROJECT_ROOT/prefixes/player1-win32}"
 PREFIX2="${PREFIX2_DIR:-$PROJECT_ROOT/prefixes/player2-win32}"
 LOGS="$PROJECT_ROOT/logs"
 
-mkdir -p "$PREFIX1/rmcache" "$PREFIX2/rmcache" "$LOGS"
+mkdir -p "$PREFIX1/rmcache" "$PREFIX2/rmcache" "$LOGS/player1" "$LOGS/player2"
 
 chown_paths() {
   chown -R "$CONTAINER_UID:$CONTAINER_GID" "$PREFIX1" "$PREFIX2" "$LOGS"

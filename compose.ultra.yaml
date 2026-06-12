@@ -5,15 +5,19 @@ x-ra2-ultra-env: &ra2-ultra-env
   ULTRA_STREAM_ENABLED: "1"
   ULTRA_GATEWAY_PORT: "6080"
   ULTRA_GATEWAY_TLS: ${ULTRA_GATEWAY_TLS:-1}
-  ULTRA_VIDEO_CODEC: ${ULTRA_VIDEO_CODEC:-H264}
+  ULTRA_VIDEO_CODEC: ${ULTRA_VIDEO_CODEC:-H265_10}
+  ULTRA_STREAM_CODEC_LOCK: ${ULTRA_STREAM_CODEC_LOCK:-}
   ULTRA_VIDEO_REQUIRE_HW: ${ULTRA_VIDEO_REQUIRE_HW:-1}
   # Stream size defaults to the display (RESOLUTION); set explicit values only
   # to force a different encode size at deploy time.
   ULTRA_VIDEO_WIDTH: ${ULTRA_VIDEO_WIDTH:-}
   ULTRA_VIDEO_HEIGHT: ${ULTRA_VIDEO_HEIGHT:-}
-  RA2_DISPLAY_DEPTH: ${RA2_DISPLAY_DEPTH:-16}
+  RA2_DISPLAY_DEPTH: ${RA2_DISPLAY_DEPTH:-24}
   ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}
-  ULTRA_VIDEO_BITRATE: ${ULTRA_VIDEO_BITRATE:-900000}
+  ULTRA_GAME_MAX_FPS: ${ULTRA_GAME_MAX_FPS:-24}
+  ULTRA_GAME_MAX_TICKS: ${ULTRA_GAME_MAX_TICKS:-0}
+  ULTRA_MAP_LOAD_CAPTURE_PAUSE_S: ${ULTRA_MAP_LOAD_CAPTURE_PAUSE_S:-60}
+  ULTRA_VIDEO_BITRATE: ${ULTRA_VIDEO_BITRATE:-2000000}
   ULTRA_VIDEO_KEYFRAME_SECONDS: ${ULTRA_VIDEO_KEYFRAME_SECONDS:-1}
   ULTRA_VIDEO_DIAGNOSTICS: ${ULTRA_VIDEO_DIAGNOSTICS:-1}
   ULTRA_H265_TEST_ENABLED: ${ULTRA_H265_TEST_ENABLED:-1}
@@ -21,9 +25,10 @@ x-ra2-ultra-env: &ra2-ultra-env
   ULTRA_VIDEO_GPU_SCALE: ${ULTRA_VIDEO_GPU_SCALE:-1}
   ULTRA_AUDIO_CODEC: ${ULTRA_AUDIO_CODEC:-opus}
   ULTRA_AUDIO_BITRATE: ${ULTRA_AUDIO_BITRATE:-64000}
-  ULTRA_AUDIO_FRAME_MS: ${ULTRA_AUDIO_FRAME_MS:-10}
-  ULTRA_AUDIO_RATE: ${ULTRA_AUDIO_RATE:-44100}
-  ULTRA_AUDIO_TRANSPORT_RATE: ${ULTRA_AUDIO_TRANSPORT_RATE:-48000}
+  ULTRA_AUDIO_FRAME_MS: ${ULTRA_AUDIO_FRAME_MS:-20}
+  ULTRA_AUDIO_RATE: ${ULTRA_AUDIO_RATE:-48000}
+  ULTRA_AUDIO_TRANSPORT_RATE: ${ULTRA_AUDIO_TRANSPORT_RATE:-${ULTRA_AUDIO_RATE:-48000}}
+  ULTRA_INPUT_MOVE_HZ: ${ULTRA_INPUT_MOVE_HZ:-60}
   LIBVA_DRIVER_NAME: ${LIBVA_DRIVER_NAME:-i965}
   GST_VAAPI_ALL_DRIVERS: "1"
   GST_VA_ALL_DRIVERS: "1"
@@ -61,6 +66,13 @@ x-ra2-ultra: &ra2-ultra
     - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
     - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
     - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+    - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
+    - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
+    - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
+    - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+    - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
+    - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
+    - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro
     - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
     - ./container/log-video-diagnostics.sh:/opt/ra2/log-video-diagnostics.sh:ro
     - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
@@ -72,12 +84,54 @@ x-ra2-ultra: &ra2-ultra
 services:
   ra2-player-1:
     <<: *ra2-ultra
-    environment:
-      <<: *ra2-ultra-env
-      RA2_GAME_CPUSET: ${PLAYER1_GAME_CPUSET:-0}
 
   ra2-player-2:
     <<: *ra2-ultra
+
+  # RAM-backed debug player (scripts/dev-ram-ultra.sh). Port 6091; tmpfs + /dev/shm binds.
+  ra2-player-dev:
+    <<: *ra2-ultra
+    container_name: ra2-player-dev
+    profiles: ["ram-dev"]
+    restart: "no"
+    mem_limit: "${DEV_RAM_MEM_LIMIT:-5120m}"
+    shm_size: "${DEV_RAM_SHM_SIZE:-2048m}"
+    ports:
+      - "${DEV_RAM_HTTP_PORT:-6091}:6080/tcp"
+    tmpfs:
+      - /home/commander/ra2-logs-root:rw,noexec,nosuid,size=${DEV_RAM_TMPFS_LOGS:-1536m}
+      - /home/commander/.ra2:rw,noexec,nosuid,size=${DEV_RAM_TMPFS_STATE:-64m}
+      - /home/commander/.cache:rw,noexec,nosuid,size=${DEV_RAM_TMPFS_CACHE:-256m}
+      - /tmp:rw,noexec,nosuid,size=${DEV_RAM_TMPFS_TMP:-2048m}
     environment:
       <<: *ra2-ultra-env
-      RA2_GAME_CPUSET: ${PLAYER2_GAME_CPUSET:-1}
+      PLAYER_ID: "1"
+      PLAYER_SERIAL: ${PLAYER1_SERIAL:?set PLAYER1_SERIAL in .env}
+      ULTRA_GAME_LOG_ROOT: /home/commander/ra2-logs-root
+      ULTRA_GAME_DIAGNOSTIC_DIR: /home/commander/ra2-logs-root/player1
+      ULTRA_GAME_WORK_DIR: /home/commander/ra2-logs-root/player1/game-work
+    volumes:
+      - ${RAM_ASSETS_DIR:-${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}}:/home/commander/game_assets:ro
+      - ${RAM_PREFIX_DIR:-/dev/shm/ra2-dev/prefix-player1}:/home/commander/.wine:rw
+      - ${RAM_TLS_DIR:-${TLS_DIR:-/volume2/Data/App_Development/ra2-lan-party/tls}}:/opt/ra2/tls:ro
+      - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
+      - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+      - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
+      - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
+      - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
+      - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+      - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
+      - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
+      - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro
+      - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
+      - ./container/log-video-diagnostics.sh:/opt/ra2/log-video-diagnostics.sh:ro
+      - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
+      - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
+      - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro
+      - ./container/remote-ultra:/opt/ra2/remote-ultra:ro
+      - ./container/pulse:/opt/ra2/pulse:ro
+      - ./container/asound.conf:/etc/asound.conf:ro
+    networks:
+      ra2_lan:
+        ipv4_address: 172.22.20.21

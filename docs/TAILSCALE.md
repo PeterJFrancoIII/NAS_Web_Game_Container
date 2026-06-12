@@ -1,8 +1,8 @@
 # Tailscale Remote Access for Moonlight
 
-Do **not** expose GameStream ports (`47984-48010` TCP, `47998-48000` UDP) directly to the internet. Use Tailscale for remote Moonlight access instead.
+> **Archived (June 2026):** Production remote play uses DDNS on ports `6081`/`6082` with ultra browser streaming (`docs/GOLDEN_MASTER.md`). This document covers archived Moonlight-over-Tailscale experiments.
 
-WebRTC fallback (`6081-6086` TCP, `62001-62040` UDP/TCP) may still need router forwards if you rely on browser remote play — but production play should use Moonlight over Tailscale.
+Do **not** expose GameStream ports (`47984-48010` TCP, `47998-48000` UDP) directly to the internet. Use Tailscale for remote Moonlight access instead.
 
 ## Deploy Tailscale sidecar
 

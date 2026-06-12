@@ -1,16 +1,10 @@
-# HTTPS for noVNC and Browser Audio
+# HTTPS for Ultra Browser Play
 
-noVNC 1.5+ requires a **secure context** (HTTPS or `localhost`). Over plain HTTP the browser blocks `crypto.subtle` and other APIs the client uses for VNC authentication and the audio plugin. You will see:
+The golden-master ultra client (`container/remote-ultra/`) requires a **secure context** (HTTPS or `localhost`) for WebCodecs, Web Audio, and WSS. Plain `http://` on ports 6081/6082 will not work reliably.
 
-```text
-noVNC requires a secure context (TLS). Expect crashes!
-```
+noVNC (archived base-image path) has the same secure-context requirement — see §Legacy noVNC below.
 
-Audio WebSockets also need **WSS** when the page is served over HTTPS.
-
-This project supports two ways to get TLS.
-
-## Option A: In-container TLS (quick LAN setup)
+## Option A: In-container TLS (production default)
 
 Best when players connect directly to NAS ports `6081` and `6082`.
 
@@ -25,85 +19,65 @@ sh scripts/generate-tls-certs.sh
 
 This writes `cert.pem` and `key.pem` under `TLS_DIR` (default: `../tls`). The certificate includes SANs for `NAS_HOSTNAME`, optional `NAS_PUBLIC_HOSTNAME`, `MediaServer2`, and `NAS_LAN_IP` from `.env`.
 
-### 2. Start with the HTTPS overlay
+### 2. Start with HTTPS + ultra overlays
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
+RA2_COMPOSE_ULTRA=1 docker compose --env-file .env \
+  -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml up -d
 ```
 
-### 3. Connect over HTTPS
+Or:
+
+```bash
+RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
+```
+
+### 3. Connect over HTTPS (ultra play page)
 
 ```text
-Player 1: https://192.168.0.193:6081/vnc.html
-Player 2: https://192.168.0.193:6082/vnc.html
+Player 1 LAN:    https://192.168.0.193:6081/
+Player 2 LAN:    https://192.168.0.193:6082/
+Player 1 remote: https://peterjfrancoiii2.synology.me:6081/
+Player 2 remote: https://peterjfrancoiii2.synology.me:6082/
 ```
 
-For remote access through Synology DDNS, set `NAS_PUBLIC_HOSTNAME=peterjfrancoiii2.synology.me` in `.env`, regenerate TLS if the certificate already existed, and connect through the forwarded player ports:
+Set `NAS_PUBLIC_HOSTNAME=peterjfrancoiii2.synology.me` in `.env`, regenerate TLS if the certificate predates the DDNS hostname, and forward TCP `6081`/`6082` on the router.
 
-```text
-Player 1: https://peterjfrancoiii2.synology.me:6081/vnc.html
-Player 2: https://peterjfrancoiii2.synology.me:6082/vnc.html
-```
-
-Browsers will warn about the self-signed certificate. Trust it on each player machine, or use Option B for a DSM-managed certificate.
+Browsers warn about the self-signed certificate. Trust it on each player machine, or use Option B.
 
 ### Verify
 
 ```bash
 sudo sh scripts/verify-deployment.sh
+RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 ```
-
-URLs in the output should use `https://` when certificates are present.
 
 ## Option B: Synology DSM reverse proxy (trusted certificate)
 
-Best when you already use DSM **Control Panel → Login Portal → Advanced → Reverse Proxy** with a Let's Encrypt or imported certificate.
+Optional trusted cert via `scripts/setup-synology-ra2-reverse-proxy.sh`:
 
-### Example rules
+```text
+https://ra2.peterjfrancoiii2.synology.me:8443/
+```
+
+Requires TCP `8443` forward and a DSM certificate covering the subdomain. Production DDNS play on `:6081` does not need this.
+
+Legacy path-based proxy example (noVNC era):
 
 | Source | Destination |
 |--------|-------------|
 | `https://MediaServer2.local:443/ra2-p1` | `http://127.0.0.1:6081` |
 | `https://MediaServer2.local:443/ra2-p2` | `http://127.0.0.1:6082` |
 
-Enable **HSTS** only if you understand the implications. Synology forwards WebSocket upgrades automatically for noVNC and audio.
+## Legacy noVNC (archived)
 
-Keep the base stack on HTTP inside Docker; the browser sees HTTPS and noVNC enables encrypted WebSockets (`wss://`) to the reverse proxy, which proxies to websockify as plain `ws://` on localhost.
-
-Connect:
+When `RA2_COMPOSE_ULTRA=0` and `RA2_ENABLE_NOVNC_FALLBACK=1`:
 
 ```text
-Player 1: https://MediaServer2.local/ra2-p1/vnc.html
-Player 2: https://MediaServer2.local/ra2-p2/vnc.html
+Player 1: https://192.168.0.193:6081/vnc.html
+Player 2: https://192.168.0.193:6082/vnc.html
 ```
 
-Do **not** change the URL to `https://192.168.0.193:6081` unless you also enable Option A — changing only the scheme without TLS on websockify will fail.
+noVNC 1.5+ shows **"noVNC requires a secure context (TLS). Expect crashes!"** over plain HTTP.
 
-## What changes in the container
-
-- `container/start-websockify.sh` adds `--cert` and `--key` when `/opt/ra2/tls/cert.pem` exists.
-- `compose.https.yaml` bind-mounts `TLS_DIR` at `/opt/ra2/tls`.
-- Health checks and `verify-deployment.sh` probe HTTPS when certificates are mounted.
-
-Without certificates, the stack still starts but logs a warning and serves plain HTTP (not recommended).
-
-## Firewall and DDNS Routing
-
-Allow the same TCP ports as before (`6081`, `6082`) for Option A, or HTTPS (`443`) for Option B. For DDNS access with Option A, configure your router and DSM firewall so:
-
-- External TCP `6081` forwards to NAS `192.168.0.193:6081` for Player 1.
-- External TCP `6082` forwards to NAS `192.168.0.193:6082` for Player 2.
-- The remote browser uses `https://peterjfrancoiii2.synology.me:6081/vnc.html` or `:6082`.
-
-Do not expose these ports to the public internet without strong VNC passwords and, ideally, a VPN or DSM reverse proxy with additional access controls.
-
-## WebRTC Remote Play
-
-When `RA2_COMPOSE_WEBRTC=1` and `compose.webrtc.yaml` is enabled:
-
-- The remote-play page is served from the existing noVNC HTTPS port: `https://host:6081/remote.html`.
-- WebRTC signaling and input use the same grouped TCP block as noVNC (`6081-6086` by default).
-- Video and audio travel over the grouped UDP media block (`62001-62040` by default).
-- noVNC remains available as fallback at `vnc.html` on the same HTTPS port.
-
-Forward the UDP ranges and TCP signaling/input ports on your router for DDNS access. If ICE fails across NAT, add a TURN server in a later phase.
+See `docs/ARCHIVED_EXPERIMENTS.md` for WebRTC and Moonlight TLS notes.

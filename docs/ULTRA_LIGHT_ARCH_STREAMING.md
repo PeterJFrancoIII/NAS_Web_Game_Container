@@ -1,33 +1,33 @@
-# Ultra-Light Arch Browser Streaming (Primary Browser Path)
+# Ultra-Light Arch Browser Streaming (Golden Master)
 
-This is the **recommended browser-only** RA2 streaming profile for the DS225+. It replaces the heavy Webtop/Selkies sidecar with a minimal Arch container that runs only what RA2 needs.
+This is the **production** RA2 streaming profile for the DS225+. See `docs/GOLDEN_MASTER.md` for the full locked descriptor.
 
 ## What runs inside the container
 
 | Process | Purpose |
 |---------|---------|
-| PulseAudio | Game audio capture |
-| Xvfb | Headless X display for Wine |
+| PulseAudio | `game` null sink @ **48 kHz**; TCP capture |
+| Xvfb | Headless X display (480p / 720p / 1080p tiers) |
 | Openbox | Minimal window manager |
-| `ra2-stream-gateway.py` | HTTPS + WSS on one port |
-| `stream-helper` | GStreamer VAAPI H.264 + raw PCM capture |
+| `ra2-stream-gateway.py` | HTTPS + WSS on port `6080` (mapped to `6081`/`6082`) |
+| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus capture |
 | Wine + RA2 | Game |
 
-**Not running:** noVNC, x11vnc, websockify, Selkies, Wolf, Sunshine, XFCE/KDE.
+**Not running:** noVNC, x11vnc, websockify, Selkies, Wolf, Sunshine, WebRTC media.
 
 ## Browser support
 
 | Browser | Support |
 |---------|---------|
-| Chromium / Chrome / Edge | **Primary** — WebCodecs H.264 + WebCodecs Opus/Web Audio |
-| Safari | Not optimized (use noVNC/WebRTC fallback) |
+| Chromium / Chrome / Edge | **Primary** — WebCodecs H.264/HEVC + Opus + Web Audio |
+| Safari | Not optimized |
 
 ## Deploy
 
 ```bash
 cd /volume2/Data/App_Development/ra2-lan-party/project
-cp .env.example .env   # if needed
-# Set PLAYER1_SERIAL, PLAYER2_SERIAL, passwords, TLS paths
+cp .env.example .env   # set RA2_COMPOSE_ULTRA=1, serials, passwords, TLS
+sh scripts/validate-env.sh
 RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ```
 
@@ -36,107 +36,92 @@ Open:
 ```text
 https://<NAS_LAN_IP>:6081/     # player 1
 https://<NAS_LAN_IP>:6082/     # player 2
+https://peterjfrancoiii2.synology.me:6081/   # remote (forward TCP 6081/6082)
 ```
 
-Only ports **6081** and **6082** are required for browser play (HTTPS/WSS on the same port). No WebRTC media port range needed.
+Only ports **6081** and **6082** are required (HTTPS/WSS on the same port).
 
-## Defaults
+## Defaults (golden master)
 
-- Display: 1024×768 @ 16-bit (`RESOLUTION` × `RA2_DISPLAY_DEPTH`); the encoded stream follows the display unless overridden
-- Video: H.264 VAAPI @ **24 fps**
-- Audio: Opus @ **64 kbps** by default, sourced from 44.1 kHz game audio and packetized at Opus' 48 kHz transport rate; PCM remains an optional fallback
-- Input: xdotool over WSS (same event schema as WebRTC input proxy)
+| Setting | Value |
+|---------|-------|
+| Display | `960x720` @ 24-bit (`RESOLUTION` × `RA2_DISPLAY_DEPTH`) |
+| In-game tiers | 640×480 / 960×720 / 1440×1080 |
+| Video | H.265 10-bit VA-API @ **24 fps**, 900 kbps |
+| Audio | Opus **48 kHz** end-to-end, 64 kbps, **20 ms** frames |
+| Client | `SETTINGS_VERSION=18` — hard-refresh after upgrades |
+
+**Enable audio:** click **Enable audio** or the connect overlay once per browser session.
 
 ## Transport settings menu
 
-The browser client includes a collapsible **Transport** panel (top-left). Settings are staged locally and **apply on reconnect** so gameplay stays stable mid-session.
+The browser client includes a collapsible **Transport** panel. Settings apply live over the existing WebSocket session (no reconnect).
 
 | Setting | Options |
 |---------|---------|
-| Video quality | `low` (20 fps), `balanced` (24 fps), `sharp` (24 fps, higher bitrate) |
-| Hardware encoder | H.264 VAAPI (default), H.265/HEVC 8-bit, H.265/HEVC 10-bit (Main10) — all VA-API hardware encodes |
-| Stream resolution | `native` (game display), 960×720, 800×600, 640×480 — downscaled on the GPU; input coordinates are mapped back onto the display |
-| Video bitrate | 300 kbps through 2.0 Mbps; use lower values to test H.265 efficiency |
-| Audio encoder | Opus low-latency (default), PCM fallback |
-| Audio quality | 64 / 96 / 128 kbps plus 44.1 kHz or 48 kHz source audio |
-| Input polling | 60 / 125 / 200 Hz mouse move rate |
-
-The gateway returns `hello.available`, `ready.active`, `ready.requested`, and `ready.fallbacks` so the status panel shows what is actually running versus what was requested.
+| Display tier | 480p / 720p / 1080p |
+| Hardware encoder | H.265 10-bit (default), H.265 8-bit, H.264 |
+| Video quality | low / balanced / sharp |
+| Video bitrate | 300 kbps – 2.0 Mbps |
+| Audio encoder | Opus (default), PCM fallback |
+| Input polling | 60 / 125 / 200 Hz |
 
 Tune in `.env`:
 
 ```bash
+RA2_COMPOSE_ULTRA=1
 WINE_VARIANT=amd64
 WINE_ARCH=win32
-WINE_ENABLE_MULTILIB=1
-PLAYER1_GAME_CPUSET=0
-PLAYER2_GAME_CPUSET=1
-RESOLUTION=1024x768
-RA2_DISPLAY_DEPTH=16
+RESOLUTION=960x720
+RA2_DISPLAY_DEPTH=24
 ULTRA_VIDEO_FPS=24
-ULTRA_VIDEO_CODEC=H264
-ULTRA_VIDEO_BITRATE=900000
-ULTRA_VIDEO_DIAGNOSTICS=1
+ULTRA_VIDEO_CODEC=H265_10
+ULTRA_VIDEO_BITRATE=2000000
+ULTRA_INPUT_MOVE_HZ=60
 ULTRA_H265_TEST_ENABLED=1
-# Optional while debugging H.265/QSV:
-# ULTRA_GST_DEBUG=qsv*:6,msdk*:6,va*:5,vah265enc:6,vaapih265enc:6
 ULTRA_GATEWAY_TLS=1
 ULTRA_AUDIO_CODEC=opus
 ULTRA_AUDIO_BITRATE=64000
-ULTRA_AUDIO_RATE=44100
-ULTRA_AUDIO_TRANSPORT_RATE=48000
+ULTRA_AUDIO_FRAME_MS=20
+ULTRA_AUDIO_RATE=48000
 ```
 
-### Resolution and bit depth
+## Audio maintenance
 
-- `RESOLUTION` sets the Xvfb display (and therefore the game) size; the native stream size follows it automatically. Changing it is a deploy-time action (container recreate) because the game must restart.
-- `RA2_DISPLAY_DEPTH` sets the Xvfb bit depth. **16 is the validated golden-master value for RA2**; 24 also enables a faster BGRx capture path but is unproven for long gameplay sessions.
-- The **Stream resolution** transport setting downscales the encode per session on the GPU (vapostproc) without touching the game; the gateway scales browser input coordinates back onto the display so clicks stay accurate.
+After PulseAudio restarts or audio transport changes, Wine must reconnect:
 
-### H.265 / HEVC
+```bash
+sudo sh scripts/restart-audio-ultra.sh ra2-player-1
+```
 
-`ULTRA_H265_TEST_ENABLED=1` (now the compose default) exposes the H.265 options in the transport menu; H.264 stays the default codec until HEVC has longer gameplay coverage. If no HEVC encoder is available, or the flag is off, the gateway falls back to H.264 and reports the reason in `ready.fallbacks`.
+Verify Wine is feeding Pulse:
 
-Verified hardware status on the DS225+ (Gemini Lake, i965 VA driver): `VAProfileHEVCMain` and `VAProfileHEVCMain10` both expose `VAEntrypointEncSlice`, and both players encode H.265 8-bit (NV12) and 10-bit (P010_10LE, `main-10` profile) through `vah265enc` with the same vapostproc GPU front as H.264 at the same measured pipeline cost (~14% of one core at 1024×768@24). QSV/MSDK factories (`qsvh265enc` / `msdkh265enc`) are not exposed by this stack; VA-API is the hardware path. Browser side, 8-bit uses `hev1.1.6.L93.B0` and 10-bit uses `hev1.2.4.L93.B0` (`hvc1` variants probed as fallback); if the browser lacks 10-bit HEVC decode the client degrades to 8-bit HEVC, then H.264.
+```bash
+docker exec ra2-player-1 sh -lc 'PULSE_SERVER=unix:/tmp/pulse/native pactl list sink-inputs short'
+```
 
-Note the game renders at 16 bpp, so 10-bit encode cannot add source color depth today — it mainly reduces banding from the encoder's internal processing. It becomes more meaningful with `RA2_DISPLAY_DEPTH=24`.
+## H.265 / HEVC
 
-Do not expect H.265 to look dramatically different at the exact same target bitrate. The hardware encoder is rate-controlled, so the useful test is whether H.265 at 300-600 kbps looks comparable to H.264 at 600-900 kbps. The transport panel reports live encoded video kbps to make that comparison visible.
+`ULTRA_H265_TEST_ENABLED=1` exposes HEVC in the transport menu. Verified on DS225+ (i965): Main and Main10 `EncSlice` entrypoints. Client degrades 10-bit → 8-bit HEVC → H.264 if decode fails.
 
-## H.265 / QSV diagnostics
-
-When `ULTRA_VIDEO_DIAGNOSTICS=1`, gateway startup writes:
+Diagnostics when `ULTRA_VIDEO_DIAGNOSTICS=1`:
 
 ```text
 /volume2/Data/App_Development/ra2-lan-party/logs/player1/video-diagnostics.log
-/volume2/Data/App_Development/ra2-lan-party/logs/player2/video-diagnostics.log
 ```
-
-The log captures `/dev/dri`, `vainfo`, GStreamer version, and factory inspection for QSV/MSDK and VA encoders including `qsvh265enc`, `msdkh265enc`, `vah265enc`, and `vaapih265enc`. Use this before changing the active stream codec; it shows whether H.265/QSV is blocked by missing plugins, missing hardware profiles, container device access, or later browser decode behavior.
 
 ## Verify
 
 ```bash
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
+python3 -m pytest tests/ -q
 ```
-
-## Why Selkies was rejected
-
-Selkies/Webtop pulls a full desktop stack (XFCE, nginx, Selkies, GPU compositor) beside RA2. On a 1.7 GB DS225+ this causes swap pressure, capture restart loops, and "waiting for stream" failures. The ultra profile keeps the RA2 runtime lean and streams directly from the existing Xvfb session.
 
 ## Rollback
 
 ```bash
-RA2_COMPOSE_ULTRA=0
-docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d --force-recreate ra2-player-1
+docker tag ra2-lan-party:ultra ra2-lan-party:ultra-prev   # before risky change
+ULTRA_VIDEO_GPU_SCALE=0   # CPU convert without rebuild
 ```
 
-Browser admin fallback: `https://<NAS>:6081/vnc.html` (standard noVNC profile).
-
-## Diagnostics
-
-```bash
-docker logs ra2-player-1
-docker exec ra2-player-1 pgrep -af 'stream|gateway|Xvfb|wine'
-RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
-```
+Archived noVNC/WebRTC paths: `docs/ARCHIVED_EXPERIMENTS.md`.

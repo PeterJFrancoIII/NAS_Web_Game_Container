@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
+if [ -f "$DISPLAY_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$DISPLAY_ENV"
+fi
+
 GAME_EXE="${GAME_EXE:-RA2MD.exe}"
 ASSETS_DIR="${ASSETS_DIR:-/home/commander/game_assets}"
 GAME_PROCESS="${ULTRA_GAME_PROCESS:-gamemd.exe}"
@@ -81,8 +87,24 @@ prepare_game_work_dir() {
     case " ${GAME_OUTPUT_FILES} " in
       *" ${base} "*) continue ;;
     esac
+    case "$base" in
+      RA2.ini|RA2MD.ini|ra2.ini|ra2md.ini|ddraw.ini) continue ;;
+    esac
     [ -e "$GAME_DIR/$base" ] || ln -s "$path" "$GAME_DIR/$base" 2>/dev/null || true
   done
+}
+
+wait_for_xvfb() {
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if pgrep -f "Xvfb ${DISPLAY:-:1}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  log "Xvfb ${DISPLAY:-:1} not running after 60s"
+  return 1
 }
 
 dump_lockup_report() {
@@ -140,6 +162,16 @@ dump_lockup_report() {
 }
 
 prepare_game_work_dir
+wait_for_xvfb || exit 1
+if [ -x /opt/ra2/sync-game-transport.sh ]; then
+  width="${RESOLUTION%x*}"
+  height="${RESOLUTION#*x}"
+  fps="${ULTRA_VIDEO_FPS:-24}"
+  /bin/sh /opt/ra2/sync-game-transport.sh "$fps" "$width" "$height" || log "game transport sync skipped"
+fi
+if [ -x /opt/ra2/ensure-game-ini-links.sh ]; then
+  /bin/sh /opt/ra2/ensure-game-ini-links.sh || log "ini link ensure skipped"
+fi
 cd "$GAME_DIR"
 log "starting ${GAME_EXE}; supervising ${GAME_PROCESS}; game_dir=${GAME_DIR}; assets=${ASSETS_DIR}; cpuset=${GAME_CPUSET}"
 if [ -f "$WINE_LOG" ]; then
@@ -160,7 +192,7 @@ trap 'log "stop requested"; stop_wine; wait "$wine_pid" 2>/dev/null || true; exi
 started_at="$(date +%s)"
 seen_game=0
 
-while kill -0 "$wine_pid" 2>/dev/null; do
+while true; do
   if [ "$(zombie_game_count)" -gt 0 ]; then
     log "${GAME_PROCESS} is defunct; restarting Wine"
     dump_lockup_report "zombie-${GAME_PROCESS}"
@@ -169,7 +201,13 @@ while kill -0 "$wine_pid" 2>/dev/null; do
     exit 1
   fi
 
-  if [ "$(live_game_count)" -gt 0 ]; then
+  game_live="$(live_game_count)"
+  wine_live=0
+  if kill -0 "$wine_pid" 2>/dev/null; then
+    wine_live=1
+  fi
+
+  if [ "$game_live" -gt 0 ]; then
     seen_game=1
     pin_game_affinity
   elif [ "$seen_game" = "1" ]; then
@@ -178,6 +216,15 @@ while kill -0 "$wine_pid" 2>/dev/null; do
     stop_wine
     wait "$wine_pid" 2>/dev/null || true
     exit 1
+  elif [ "$wine_live" -eq 0 ]; then
+    set +e
+    wait "$wine_pid" 2>/dev/null
+    status="$?"
+    set -e
+    log "wine exited with status ${status} before ${GAME_PROCESS} was ready"
+    dump_lockup_report "wine-exit-${status}"
+    stop_wine
+    exit "$status"
   elif [ "$(($(date +%s) - started_at))" -gt "$READY_TIMEOUT" ]; then
     log "${GAME_PROCESS} did not become ready within ${READY_TIMEOUT}s"
     dump_lockup_report "ready-timeout-${GAME_PROCESS}"
@@ -188,11 +235,3 @@ while kill -0 "$wine_pid" 2>/dev/null; do
 
   sleep 2
 done
-
-set +e
-wait "$wine_pid"
-status="$?"
-set -e
-log "wine exited with status ${status}"
-dump_lockup_report "wine-exit-${status}"
-exit "$status"

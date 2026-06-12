@@ -4,70 +4,58 @@ This project implements the consolidated research at:
 
 `Research/Consolidated_Remote Desktop, Cloud Gaming, and Web Rendering Architecture for Synology DS225+.md`
 
+**Golden master (June 2026):** Profile 0 — Ultra Arch browser streaming. See `docs/GOLDEN_MASTER.md`.
+
 ## Build profiles
 
-| Profile | Stack | When to use | Compose / script |
-|---------|-------|-------------|------------------|
-| **0 — Browser (primary)** | Ultra Arch + WSS/WebCodecs | Zero-install browser play in Chromium | `compose.ultra.yaml`, `scripts/redeploy-ultra.sh` |
-| **1 — Primary native** | Wolf + Moonlight | Lowest latency, native clients | `compose.wolf.yaml`, `scripts/redeploy-moonlight-poc.sh wolf` |
-| **1b — Secondary native** | Sunshine + Moonlight | Simpler single host (headless caveats) | `compose.sunshine.yaml` |
-| **RA2 game** | Wine + Xvfb | Two-player LAN party core | `compose.yaml` |
-| **Admin** | noVNC | Recovery / debugging | `compose.yaml` + `compose.https.yaml` |
-| **Legacy** | WebRTC `remote.html` | Browser fallback only | `compose.webrtc.yaml` |
-| **Rejected** | Selkies/Webtop | Too heavy for DS225+ | `compose.selkies-experiment.yaml` (experiment only) |
-| **WAN** | Tailscale | Remote Moonlight without public GameStream ports | `compose.tailscale.yaml`, `docs/TAILSCALE.md` |
+| Profile | Stack | Status | Compose / script |
+|---------|-------|--------|------------------|
+| **0 — Browser (production)** | Ultra Arch + WSS/WebCodecs | **Golden master** | `compose.ultra.yaml`, `scripts/redeploy-ultra.sh` |
+| 1 — Native Moonlight | Wolf + Moonlight | Archived | `compose.wolf.yaml`, `docs/ARCHIVED_EXPERIMENTS.md` |
+| 1b — Sunshine | Sunshine + Moonlight | Archived | `compose.sunshine.yaml` |
+| RA2 game core | Wine + Xvfb | Production (inside ultra) | `compose.yaml` |
+| Admin noVNC | noVNC + websockify | Archived | base `compose.yaml` without ultra |
+| Legacy WebRTC | `remote.html` | Archived | `compose.webrtc.yaml` |
+| Selkies/Webtop | Full desktop | Rejected | `compose.selkies-experiment.yaml` |
+| WAN Tailscale | Remote Moonlight | Archived | `compose.tailscale.yaml` |
 
-## Implementation order (from research §16)
+## Production deployment order
 
-1. Upgrade RAM to **6 GB** (`RA2_PRODUCTION_RAM_MIB=6144`).
-2. Use **2.5GbE** for streaming traffic.
-3. Run host prep: `sh scripts/check-host-prerequisites.sh`
-4. **Manual session prep** (no DSM boot task for now): `sudo sh scripts/prepare-streaming-session.sh`
-5. Restore i915/QSV if needed: `sudo sh scripts/enable-host-transcode.sh`
-6. Deploy Wolf: `sudo sh scripts/redeploy-moonlight-poc.sh wolf`
-7. Pair Moonlight on LAN; validate H.264 + input.
-8. Add Tailscale for WAN: `docs/TAILSCALE.md`
-9. Deploy ultra browser profile: `RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh`
+1. Copy project to `/volume2/Data/App_Development/ra2-lan-party/project`
+2. `sh scripts/prepare-nas.sh` and copy game assets
+3. `cp .env.example .env` — set `RA2_COMPOSE_ULTRA=1`, serials, TLS, DDNS hostname
+4. `sh scripts/validate-env.sh`
+5. `sh scripts/generate-tls-certs.sh` (if needed)
+6. `RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh`
+7. Play at `https://<NAS>:6081/` — enable audio, hard-refresh after client updates
 
-_Deferred:_ DSM boot task (`scripts/dsm-boot-task.sh`) — add later when you want permissions to survive reboot.
-
-## Host requirements (non-negotiable)
+## Host requirements
 
 | Requirement | Check |
 |-------------|-------|
 | `/dev/dri/renderD128` | `sh scripts/check-transcode.sh` |
-| `/dev/uinput` | `sh scripts/enable-uinput.sh` |
 | VA-API H.264/HEVC | `vainfo` inside container |
-| 6 GB RAM production | `sh scripts/check-host-prerequisites.sh` |
-| Session DRI/uinput prep | `sudo sh scripts/prepare-streaming-session.sh` |
-| Boot-time persistence (deferred) | `scripts/dsm-boot-task.sh` in DSM Task Scheduler |
+| TLS for browser | `docs/HTTPS.md` |
+| Router forwards | TCP `6081-6082` for DDNS play |
 
-Enable uinput device passthrough when `/dev/uinput` exists:
-
-```bash
-RA2_COMPOSE_MOONLIGHT_UINPUT=1 sh scripts/redeploy-moonlight-poc.sh wolf
-```
+uinput and Moonlight host prep are only needed for archived native streaming experiments.
 
 ## Port reference
 
 | Service | Ports | Exposure |
 |---------|-------|----------|
-| RA2 ultra browser | 6081-6082 TCP (HTTPS/WSS) | LAN / DDNS |
-| RA2 noVNC admin | 6081-6082 TCP `/vnc.html` | LAN / admin |
-| WebRTC legacy | 6083-6086 TCP, 62001-62040 UDP/TCP | Fallback only |
-| GameStream (Wolf/Sunshine) | 47984-47990 TCP, 47998-48000 UDP, 48010 | **LAN/VPN only** |
-| Selkies | 6100 HTTP, 6101 HTTPS | LAN or reverse proxy |
-| Tailscale P2P | 41641 UDP | Router forward to NAS |
-
-## RA2 + Wolf coexistence
-
-`ra2-player-1/2` remain the Wine/RA2 game hosts. Wolf runs **beside** them for streaming experiments. Full integration (streaming the RA2 Xvfb desktop through Wolf) is a future validation step — start with Wolf's test desktop before attaching RA2.
+| **RA2 ultra browser (production)** | 6081-6082 TCP HTTPS/WSS | LAN / DDNS |
+| RA2 noVNC (archived) | 6081-6082 `/vnc.html` | Not used in ultra |
+| WebRTC (archived) | 6083-6086 TCP, 62001-62040 UDP/TCP | Fallback only |
+| GameStream Wolf/Sunshine (archived) | 47984-48010 | LAN/VPN only |
+| Optional DSM reverse proxy | 8443 TCP | `setup-synology-ra2-reverse-proxy.sh` |
 
 ## Diagnostics
 
 ```bash
-sh scripts/check-moonlight-ready.sh
-sh scripts/check-tailscale-direct.sh
-sh scripts/compare-moonlight-webrtc.sh
-sh scripts/check-webrtc-ice-reachability.sh   # legacy WebRTC only
+RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
+sudo sh scripts/restart-audio-ultra.sh ra2-player-1
+sudo sh scripts/cleanup-golden-master.sh
 ```
+
+Archived experiment checks: `check-moonlight-ready.sh`, `check-webrtc-ice-reachability.sh`.

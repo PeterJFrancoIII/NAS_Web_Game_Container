@@ -6,8 +6,14 @@ GAME_DIR="${WINEPREFIX:-/home/commander/.wine}/drive_c/RA2"
 GAME_EXE="${GAME_EXE:-RA2MD.exe}"
 PLAYER_ID="${PLAYER_ID:-unknown}"
 PLAYER_SERIAL="${PLAYER_SERIAL:-}"
-RESOLUTION="${RESOLUTION:-1024x768}"
+RESOLUTION="${RESOLUTION:-960x720}"
+RA2_DISPLAY_DEPTH="${RA2_DISPLAY_DEPTH:-24}"
 WINE_ARCH="${WINEARCH:-win64}"
+export RESOLUTION RA2_DISPLAY_DEPTH
+
+ULTRA_DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
+mkdir -p "$(dirname "$ULTRA_DISPLAY_ENV")"
+printf 'RESOLUTION=%s\nRA2_DISPLAY_DEPTH=%s\n' "$RESOLUTION" "$RA2_DISPLAY_DEPTH" >"$ULTRA_DISPLAY_ENV"
 
 log() {
   printf '[ra2-ultra-%s] %s\n' "$PLAYER_ID" "$*"
@@ -46,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 
 start_setup_display() {
-  Xvfb "${DISPLAY:-:1}" -screen 0 "${RESOLUTION}x16" -nolisten tcp >/tmp/ra2-xvfb-init.log 2>&1 &
+  Xvfb "${DISPLAY:-:1}" -screen 0 "${RESOLUTION}x${RA2_DISPLAY_DEPTH}" -nolisten tcp >/tmp/ra2-xvfb-init.log 2>&1 &
   XVFB_PID="$!"
   sleep 1
 }

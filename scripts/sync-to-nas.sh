@@ -20,8 +20,8 @@ ssh "$HOST" "find '$TARGET' -name '._*' -delete 2>/dev/null || true; chmod +x '$
 
 echo "Sync complete."
 echo ""
-echo "Note: bind-mounted container files (webrtc-media.py, remote-play.js, etc.)"
-echo "are refreshed on the next 'docker compose up -d --force-recreate'."
-echo "For a full WebRTC redeploy with verification, run:"
-echo "  NAS_HOST=${HOST} sh scripts/redeploy-webrtc.sh"
-echo "  NAS_HOST=${HOST} sh scripts/redeploy-low-memory.sh"
+echo "RAM debug loop (recommended — hot path in /dev/shm, port 6091):"
+echo "  NAS_HOST=${HOST} sh scripts/sync-to-ram.sh"
+echo ""
+echo "Production player (disk bind mounts, port 6081):"
+echo "  NAS_HOST=${HOST} sh scripts/redeploy-ultra.sh"

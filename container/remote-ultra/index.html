@@ -7,7 +7,20 @@
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #e8e8e8; font: 14px/1.4 system-ui, sans-serif; }
-    #canvas { width: 100vw; height: 100vh; display: block; object-fit: contain; background: #000; cursor: crosshair; touch-action: none; }
+    #gameSurface {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      display: block;
+      outline: none;
+    }
+    #gameSurface:fullscreen,
+    #gameSurface:-webkit-full-screen {
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+    #canvas { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; cursor: crosshair; touch-action: none; }
     #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.85); z-index: 2; }
     #overlay.hidden { display: none; }
     #overlayBox { max-width: 640px; padding: 20px; border: 1px solid #3a5a7a; border-radius: 8px; background: #111; text-align: center; }
@@ -81,10 +94,86 @@
       color: #ffe8a0;
     }
     #pendingNotice.visible { display: block; }
+    .field-hint {
+      margin: 8px 0 0;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #a8c4dc;
+      opacity: 0.9;
+    }
+    html.game-mode-fullscreen,
+    html.game-mode-fullscreen body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    html.game-mode-locked #canvas { cursor: none; }
+    html.game-mode-locked #controlPanel { display: none; }
+    #cursorOverlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 6;
+      overflow: hidden;
+    }
+    #cursorOverlay.hidden { display: none; }
+    .cursor-marker {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 20px;
+      height: 20px;
+      margin: -10px 0 0 -10px;
+      pointer-events: none;
+      box-sizing: border-box;
+    }
+    .cursor-marker::before,
+    .cursor-marker::after {
+      content: "";
+      position: absolute;
+      background: currentColor;
+    }
+    .cursor-marker::before {
+      left: 50%;
+      top: 2px;
+      width: 2px;
+      height: 16px;
+      margin-left: -1px;
+    }
+    .cursor-marker::after {
+      top: 50%;
+      left: 2px;
+      height: 2px;
+      width: 16px;
+      margin-top: -1px;
+    }
+    #localCursor {
+      color: #ffffff;
+      filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+    }
+    #localCursor::before,
+    #localCursor::after {
+      background: #ffffff;
+    }
+    #remoteCursor {
+      color: rgba(255, 196, 72, 0.95);
+      filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+    }
+    #remoteCursor::before,
+    #remoteCursor::after {
+      background: rgba(255, 196, 72, 0.95);
+    }
   </style>
 </head>
 <body>
-  <canvas id="canvas" width="1024" height="768"></canvas>
+  <div id="gameSurface" tabindex="-1">
+    <canvas id="canvas" width="1024" height="768"></canvas>
+    <div id="cursorOverlay" class="hidden" aria-hidden="true">
+      <div id="remoteCursor" class="cursor-marker" title="Remote cursor (in game)"></div>
+      <div id="localCursor" class="cursor-marker" title="Local aim (your mouse)"></div>
+    </div>
+  </div>
   <div id="overlay"><div id="overlayBox"><div id="overlayStatus">Click to connect</div></div></div>
   <div id="controlPanel" class="collapsed">
     <div id="panelHeader"><span>Transport</span><span id="panelToggle">▼</span></div>
@@ -94,24 +183,15 @@
         <select id="videoQuality">
           <option value="low">Low (20 fps)</option>
           <option value="balanced" selected>Balanced (24 fps)</option>
-          <option value="sharp">Sharp (24 fps)</option>
+          <option value="sharp">Sharp (30 fps)</option>
         </select>
       </div>
       <div class="field">
         <label for="videoCodec">Hardware encoder</label>
         <select id="videoCodec">
-          <option value="H264" selected>H.264 (VAAPI)</option>
+          <option value="H264">H.264 (VAAPI)</option>
           <option value="H265">H.265 / HEVC 8-bit (hardware)</option>
-          <option value="H265_10">H.265 / HEVC 10-bit (hardware)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="videoResolution">Stream resolution</label>
-        <select id="videoResolution">
-          <option value="native" selected>Native (game display)</option>
-          <option value="960x720">960 x 720</option>
-          <option value="800x600">800 x 600</option>
-          <option value="640x480">640 x 480</option>
+          <option value="H265_10" selected>H.265 / HEVC 10-bit (hardware)</option>
         </select>
       </div>
       <div class="field">
@@ -120,10 +200,10 @@
           <option value="300000">300 kbps</option>
           <option value="450000">450 kbps</option>
           <option value="600000">600 kbps</option>
-          <option value="900000" selected>900 kbps</option>
+          <option value="900000">900 kbps</option>
           <option value="1200000">1.2 Mbps</option>
           <option value="1600000">1.6 Mbps</option>
-          <option value="2000000">2.0 Mbps</option>
+          <option value="2000000" selected>2.0 Mbps</option>
         </select>
       </div>
       <div class="field">
@@ -142,25 +222,26 @@
         </select>
       </div>
       <div class="field">
-        <label for="audioQuality">Audio quality</label>
+        <label for="audioQuality">Audio sample rate</label>
         <select id="audioQuality">
-          <option value="44100" selected>44.1 kHz stereo</option>
-          <option value="48000">48 kHz stereo</option>
+          <option value="48000" selected>48 kHz stereo (Opus)</option>
+          <option value="44100">44.1 kHz stereo (PCM only)</option>
         </select>
-      </div>
-      <div class="field">
-        <label for="audioTest">Audio output</label>
-        <button id="audioTest" type="button">Enable audio</button>
       </div>
       <div class="field">
         <label for="inputMoveHz">Input polling</label>
         <select id="inputMoveHz">
-          <option value="60">60 Hz mouse</option>
-          <option value="125" selected>125 Hz mouse</option>
+          <option value="60" selected>60 Hz mouse</option>
+          <option value="125">125 Hz mouse</option>
           <option value="200">200 Hz mouse</option>
         </select>
       </div>
-      <div id="pendingNotice">Changes apply on reconnect.</div>
+      <div class="field">
+        <label for="gameModeButton">Display</label>
+        <button id="gameModeButton" type="button">Game mode (fullscreen + lock)</button>
+        <p class="field-hint">Locks the mouse inside the stream. White crosshair = your local aim; amber = where the game cursor is (may lag behind). Exit with the button, double-click, or Ctrl+Alt+L.</p>
+      </div>
+      <div id="pendingNotice">Applying settings…</div>
       <div id="transportStatus">status: loading</div>
     </div>
   </div>

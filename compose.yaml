@@ -11,71 +11,49 @@ x-ra2-common: &ra2-common
   pids_limit: ${RA2_PIDS_LIMIT:-256}
   security_opt:
     - seccomp:unconfined
-  shm_size: "${RA2_SHM_SIZE:-256m}"
   mem_limit: "${RA2_MEM_LIMIT:-512m}"
+  shm_size: "${RA2_SHM_SIZE:-256m}"
   healthcheck:
     test: ["CMD-SHELL", "/bin/sh /opt/ra2/healthcheck-novnc.sh || exit 1"]
     interval: 30s
     timeout: 10s
     retries: 5
     start_period: 300s
-  environment:
-    TZ: ${TZ:-America/New_York}
-    RESOLUTION: ${RESOLUTION:-1024x768}
-    GAME_EXE: ${GAME_EXE:-RA2MD.exe}
-    WINEDEBUG: -all
-    AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
-    AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
-    AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
-    AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
-    AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
-    AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
-    AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
-    AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
-    AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
-    LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
-    RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
-    RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
-    RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
-    RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
-  volumes:
-    - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
-  networks:
-    ra2_lan: {}
+
+x-ra2-player-env: &ra2-player-env
+  TZ: ${TZ:-America/New_York}
+  RESOLUTION: ${RESOLUTION:-1024x768}
+  GAME_EXE: ${GAME_EXE:-RA2MD.exe}
+  WINEDEBUG: -all
+  AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
+  AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
+  AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
+  AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
+  AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
+  AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
+  AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
+  AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
+  AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
+  LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
+  RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
+  RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
+  RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
+  RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
+  VNC_PASSWORD: ${VNC_PASSWORD:?set VNC_PASSWORD in .env}
 
 services:
   ra2-player-1:
     <<: *ra2-common
     container_name: ra2-player-1
-    mem_limit: "${PLAYER1_MEM_LIMIT:-${RA2_MEM_LIMIT:-512m}}"
-    shm_size: "${PLAYER1_SHM_SIZE:-${RA2_SHM_SIZE:-256m}}"
     environment:
-      TZ: ${TZ:-America/New_York}
-      RESOLUTION: ${RESOLUTION:-1024x768}
-      GAME_EXE: ${GAME_EXE:-RA2MD.exe}
-      WINEDEBUG: -all
-      AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
-      AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
-      AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
-      AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
-      AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
-      AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
-      AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
-      AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
-      AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
-      LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
-      RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
-      RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
-      RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
-      RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
+      <<: *ra2-player-env
       PLAYER_ID: "1"
       PLAYER_SERIAL: ${PLAYER1_SERIAL:?set PLAYER1_SERIAL in .env}
-      VNC_PASSWORD: ${PLAYER1_VNC_PASSWORD:?set PLAYER1_VNC_PASSWORD in .env}
     ports:
       - "${PLAYER1_HTTP_PORT:-6081}:6080/tcp"
     volumes:
-      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1-win32}:/home/commander/.wine:rw
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
       - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro
@@ -97,35 +75,15 @@ services:
   ra2-player-2:
     <<: *ra2-common
     container_name: ra2-player-2
-    mem_limit: "${PLAYER2_MEM_LIMIT:-${RA2_MEM_LIMIT:-512m}}"
-    shm_size: "${PLAYER2_SHM_SIZE:-${RA2_SHM_SIZE:-256m}}"
     environment:
-      TZ: ${TZ:-America/New_York}
-      RESOLUTION: ${RESOLUTION:-1024x768}
-      GAME_EXE: ${GAME_EXE:-RA2MD.exe}
-      WINEDEBUG: -all
-      AUDIO_BUFFER_MIN_REMAIN: ${AUDIO_BUFFER_MIN_REMAIN:-3}
-      AUDIO_DRIFT_CHECK_INTERVAL_MS: ${AUDIO_DRIFT_CHECK_INTERVAL_MS:-2000}
-      AUDIO_DRIFT_MAX_TOLERANCE: ${AUDIO_DRIFT_MAX_TOLERANCE:-0.5}
-      AUDIO_TARGET_LATENCY: ${AUDIO_TARGET_LATENCY:-1.0}
-      AUDIO_MAX_PLAYBACK_RATE_DELTA: ${AUDIO_MAX_PLAYBACK_RATE_DELTA:-0.03}
-      AUDIO_BITRATE: ${AUDIO_BITRATE:-96000}
-      AUDIO_WEBM_CLUSTER_MS: ${AUDIO_WEBM_CLUSTER_MS:-100}
-      AUDIO_OPUS_FRAME_MS: ${AUDIO_OPUS_FRAME_MS:-20}
-      AUDIO_QUEUE_BUFFERS: ${AUDIO_QUEUE_BUFFERS:-8}
-      LATENCY_OVERLAY_ENABLED: ${LATENCY_OVERLAY_ENABLED:-1}
-      RA2_MEMORY_PROFILE: ${RA2_MEMORY_PROFILE:-two-player-low}
-      RA2_ENABLE_NOVNC_FALLBACK: ${RA2_ENABLE_NOVNC_FALLBACK:-1}
-      RA2_ENABLE_AUDIO_PROXY: ${RA2_ENABLE_AUDIO_PROXY:-0}
-      RA2_ENABLE_LATENCY_PROXY: ${RA2_ENABLE_LATENCY_PROXY:-0}
+      <<: *ra2-player-env
       PLAYER_ID: "2"
       PLAYER_SERIAL: ${PLAYER2_SERIAL:?set PLAYER2_SERIAL in .env}
-      VNC_PASSWORD: ${PLAYER2_VNC_PASSWORD:?set PLAYER2_VNC_PASSWORD in .env}
     ports:
       - "${PLAYER2_HTTP_PORT:-6082}:6080/tcp"
     volumes:
-      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2-win32}:/home/commander/.wine:rw
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ./container/entrypoint.sh:/opt/ra2/entrypoint.sh:ro
       - ./container/patch-novnc.sh:/opt/ra2/patch-novnc.sh:ro
       - ./container/supervisord.conf:/opt/ra2/supervisord.conf:ro

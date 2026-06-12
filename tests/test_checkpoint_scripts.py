@@ -337,8 +337,7 @@ class EnvironmentCheckpointUnitTest(unittest.TestCase):
             (root / ".env").write_text(
                 "\n".join(
                     [
-                        "PLAYER1_VNC_PASSWORD=player1-secret",
-                        "PLAYER2_VNC_PASSWORD=player2-secret",
+                        "VNC_PASSWORD=player-secret",
                         "PLAYER1_SERIAL=11112222333344445555",
                         "PLAYER2_SERIAL=11112222333344445555",
                         "PLAYER1_HTTP_PORT=6081",
@@ -368,8 +367,7 @@ class EnvironmentCheckpointUnitTest(unittest.TestCase):
             (root / ".env").write_text(
                 "\n".join(
                     [
-                        "PLAYER1_VNC_PASSWORD=player1-secret",
-                        "PLAYER2_VNC_PASSWORD=player2-secret",
+                        "VNC_PASSWORD=player-secret",
                         "PLAYER1_SERIAL=11112222333344445555",
                         "PLAYER2_SERIAL=55554444333322221111",
                         "PLAYER1_HTTP_PORT=8080",
@@ -399,8 +397,7 @@ class EnvironmentCheckpointUnitTest(unittest.TestCase):
             (root / ".env").write_text(
                 "\n".join(
                     [
-                        "PLAYER1_VNC_PASSWORD=player1-secret",
-                        "PLAYER2_VNC_PASSWORD=player2-secret",
+                        "VNC_PASSWORD=player-secret",
                         "PLAYER1_SERIAL=10001000100010001000",
                         "PLAYER2_SERIAL=20002000200020002000",
                         "PLAYER1_HTTP_PORT=6081",

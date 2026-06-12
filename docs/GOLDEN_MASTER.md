@@ -1,270 +1,394 @@
-# RA2 NAS Golden Master
+# RA2 NAS Golden Master — Final Lock (June 2026)
 
-This document is the master descriptor for the current known-good Red Alert 2 / Yuri's Revenge NAS streaming program. It captures the runtime state that stabilized gameplay after repeated `gamemd.exe` crashes and should be read before changing Wine, streaming, input, CPU affinity, compose overlays, or NAS paths.
+**Tag:** `golden-master-2026-06`  
+**Repo:** `synology-ra2-arch/` (GitHub: `NAS_Web_Game_Container`)  
+**NAS path:** `/volume2/Data/App_Development/ra2-lan-party/project`
 
-## Golden-Master Summary
+This is the **single authoritative document** for reproducing, operating, and restoring the production Red Alert 2 / Yuri's Revenge ultra browser streaming stack. Written for **low-context LLM agents** and developers with limited prior exposure to the project.
 
-- Primary play path: ultra-light browser streaming, not noVNC, Selkies, Moonlight, or the legacy WebRTC overlay.
-- Player URLs:
-  - Player 1 LAN: `https://192.168.0.193:6081/`
-  - Player 2 LAN: `https://192.168.0.193:6082/`
-- NAS project root: `/volume2/Data/App_Development/ra2-lan-party`
-- Active compose project: `/volume2/Data/App_Development/ra2-lan-party/project`
-- Local mirror: `/Users/computer/Desktop/App Development/Red_Alert2_NAS:Arch/synology-ra2-arch`
-- Runtime image: `ra2-lan-party:ultra`
-- Active containers: `ra2-player-1`, `ra2-player-2`
-- Stable Wine runtime: Wine amd64 package with a `win32` prefix, not WoW64.
-- Critical stability invariant: each game instance must run on exactly one assigned CPU.
+**Production URLs:**
 
-The single most important stability discovery is CPU affinity. Do not remove, weaken, or bypass game-process pinning unless a replacement is proven under live gameplay.
+| Player | LAN | Remote (DDNS) |
+|--------|-----|---------------|
+| 1 | `https://192.168.0.193:6081/` | `https://peterjfrancoiii2.synology.me:6081/` |
+| 2 | `https://192.168.0.193:6082/` | `https://peterjfrancoiii2.synology.me:6082/` |
 
-## Current Stable Architecture
+---
 
-The ultra profile removes heavyweight desktop and browser-remoting layers from the hot path. Each player container runs only the processes needed for RA2 and the custom browser stream:
+## 1. Hardware and host
 
-- `Xvfb` provides a headless X display.
-- `openbox` supplies the minimal window manager expected by Wine and the game.
-- PulseAudio captures game audio.
-- `ra2-stream-gateway.py` serves HTTPS and WSS on the same external player port.
-- `stream-helper` captures Xvfb output and audio through GStreamer.
-- Wine launches `RA2MD.exe`, which starts `gamemd.exe`.
-- `start-game-ultra.sh` supervises the game process, collects diagnostics, and enforces CPU affinity.
+### 1.1 Reference deployment (verified)
 
-Not part of the primary path:
+| Component | Spec |
+|-----------|------|
+| **Device** | Synology DS225+ NAS |
+| **CPU** | Intel Celeron J4125 — 4 cores @ 2.0 GHz (Gemini Lake) |
+| **iGPU** | Intel UHD 600 — VA-API via **`i965`** driver (not iHD) |
+| **RAM** | Stock ~1.7 GB (tight); **18 GB upgrade** on production NAS |
+| **Storage** | `/volume2/Data/App_Development/ra2-lan-party/` |
+| **LAN IP** | `192.168.0.193` |
+| **DDNS** | `peterjfrancoiii2.synology.me` |
+| **SSH** | Port `23921` — use DDNS host `MediaServer2` if LAN SSH times out |
 
-- noVNC, `x11vnc`, and websockify
-- Selkies/Webtop
-- Moonlight/Sunshine/Wolf
-- legacy WebRTC signaling/input/media ports
-- full desktop environments such as XFCE or KDE
+### 1.2 Required host capabilities
 
-Those alternatives may remain as experiments or recovery paths, but the golden master is the ultra browser profile.
+- Docker / Container Manager with `/dev/dri` passthrough
+- `RENDER_GID=937`, `VIDEO_GID=44` for VA-API render node
+- Router forwards **TCP 6081 + 6082** to NAS for remote play
+- Client: **Chromium, Chrome, or Edge** (WebCodecs + WSS required)
 
-## Protocols And Ports
+### 1.3 CPU layout (do not change)
 
-The browser play path uses one TCP port per player:
+| Core | Assignment |
+|------|------------|
+| 0 | `gamemd.exe` player 1 (`PLAYER_ID=1`) |
+| 1 | `gamemd.exe` player 2 (`PLAYER_ID=2`) |
+| 2–3 | `stream-helper` + gateway + Xvfb + Pulse (`ULTRA_STREAM_CPUSET=2,3`) |
 
-- `6081/tcp` -> player 1 HTTPS/WSS gateway
-- `6082/tcp` -> player 2 HTTPS/WSS gateway
+Watchdog in `start-game-ultra.sh` re-applies `taskset` — Wine children escape the initial pin.
 
-The root URL serves the play page. `/vnc.html` is not the ultra play URL.
+---
 
-Transport:
+## 2. Current container state and attributes
 
-- Page: HTTPS from `ra2-stream-gateway.py`
-- Video/audio/control channel: WSS, same origin and same port
-- Video: H.264 by default, decoded by Chromium-family browser WebCodecs
-- Audio: Opus low-latency at `64000` bps by default, with PCM as a fallback
-- Input: browser events over WSS to `xdotool`
-- One active WSS stream session per player container; a newer browser tab replaces the previous session
+### 2.1 What runs in production
 
-No WebRTC UDP media range is required for the golden path.
+| Item | Value |
+|------|-------|
+| **Image** | `ra2-lan-party:ultra` (`container/Dockerfile.ultra`) |
+| **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` |
+| **Flag** | `RA2_COMPOSE_ULTRA=1` |
+| **Containers** | `ra2-player-1`, `ra2-player-2` |
+| **Base OS** | Arch Linux (inside container) |
+| **Wine** | Kron4ek 10.8, `amd64` package, **`win32` prefix**, multilib |
+| **Game** | `RA2MD.exe` → `gamemd.exe` |
+| **Assets mount** | `ASSETS_DIR=.../assets-game2` (read-only) |
+| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=32`** |
 
-## Input Policy
+### 2.2 Per-container processes
 
-Full gameplay input is required. Do not block useful inputs as a crash workaround.
+| Process | Role |
+|---------|------|
+| PulseAudio | `game` null sink @ 48 kHz; TCP capture port 4711 |
+| Xvfb | Headless display 960×720 @ 24-bit; RandR tiers 480p/720p/1080p |
+| Openbox | Minimal WM |
+| Wine + RA2 | Game on `:1` |
+| `ra2-stream-gateway.py` | HTTPS + WSS on container port 6080 |
+| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus |
 
-Forwarded input includes:
+**Not in hot path:** noVNC, x11vnc, websockify, WebRTC, Moonlight, Selkies.
 
-- left, middle, right, and extra mouse buttons where the browser exposes them
-- wheel up/down
-- keyboard events
-- Alt and Meta key events
-- modifier combinations used by the game or by players
+### 2.3 Matched two-player deployment
 
-If input appears correlated with a crash, debug Wine/game/runtime state instead of adding broad input guards. Input blocking regresses gameplay and is not considered part of the stable solution.
+Both players share **identical** config via `x-ra2-player-env` and `x-ra2-ultra-env`. **Only these differ:**
 
-## CPU Affinity
+| | Player 1 | Player 2 |
+|---|----------|----------|
+| `PLAYER_SERIAL` | `PLAYER1_SERIAL` | `PLAYER2_SERIAL` |
+| Wine prefix | `prefixes/player1-win32` | `prefixes/player2-win32` |
+| Host port | 6081 | 6082 |
+| Bridge IP | 172.22.20.11 | 172.22.20.12 |
+| CPU core | 0 | 1 |
 
-The game must be pinned to one CPU per player:
+Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, `ASSETS_DIR`, image, volumes.
 
-- Player 1: `RA2_GAME_CPUSET=0`
-- Player 2: `RA2_GAME_CPUSET=1`
-- Future players: default to `PLAYER_ID - 1` unless explicitly overridden.
+### 2.4 Transport defaults (locked)
 
-The launcher is started through `taskset -c "$GAME_CPUSET"`, and the watchdog re-applies `taskset -pc "$GAME_CPUSET"` to live `gamemd.exe` processes. The second step matters because `gamemd.exe` can escape the launcher's affinity after Wine starts child processes.
+**Server (`.env` / compose):**
 
-The capture/encode helper is isolated onto separate cores through `ULTRA_STREAM_CPUSET` (default `2,3` on the 4-core J4125). The gateway launches the helper through `taskset -c "$ULTRA_STREAM_CPUSET"` so GStreamer capture/convert/encode never preempts a pinned game core. This complements, and never replaces, the game-side pin. Verified live: the helper affinity list is `2,3` while games keep cores `0` and `1`.
+| Setting | Value |
+|---------|-------|
+| `RESOLUTION` | `960x720` |
+| `RA2_DISPLAY_DEPTH` | `24` |
+| `ULTRA_VIDEO_CODEC` | `H265_10` |
+| `ULTRA_VIDEO_FPS` | `24` |
+| `ULTRA_VIDEO_BITRATE` | `2000000` (2.0 Mbps) |
+| `ULTRA_VIDEO_REQUIRE_HW` | `1` |
+| `ULTRA_VIDEO_GPU_SCALE` | `1` |
+| `ULTRA_STREAM_CPUSET` | `2,3` |
+| `ULTRA_H265_TEST_ENABLED` | `1` |
+| `ULTRA_STREAM_CODEC_LOCK` | **empty** |
+| `ULTRA_AUDIO_CODEC` | `opus` |
+| `ULTRA_AUDIO_BITRATE` | `64000` |
+| `ULTRA_AUDIO_RATE` | `48000` |
+| `ULTRA_INPUT_MOVE_HZ` | `60` |
+| `LIBVA_DRIVER_NAME` | `i965` |
 
-The expected live checks are:
+**Browser client (`ultra-play.js`):**
 
-```bash
-docker exec ra2-player-1 sh -lc 'echo "$RA2_GAME_CPUSET"; pgrep -x gamemd.exe | xargs -r taskset -pc'
-docker exec ra2-player-2 sh -lc 'echo "$RA2_GAME_CPUSET"; pgrep -x gamemd.exe | xargs -r taskset -pc'
-```
+| Setting | Value |
+|---------|-------|
+| Video quality | balanced / 24 fps |
+| Codec | H.265 10-bit |
+| Bitrate | 2.0 Mbps |
+| Audio | Opus 64 kbps @ 48 kHz |
+| Mouse poll | 60 Hz |
+| Settings apply | Live `reconfigure` (no disconnect) |
+| Audio unlock | On connect / first audio packet |
+| Game mode | Fullscreen + pointer lock on `#gameSurface` |
+| Lag cursors | White = local aim; amber = last sent to game |
 
-Both the environment value and the process affinity must match the assigned CPU.
+---
 
-## Wine Runtime
+## 3. Transport, ports, protocols, dependencies
 
-The stable runtime currently uses:
+### 3.1 Production port map (TCP only — no UDP to internet)
 
-- `WINE_VARIANT=amd64`
-- `WINE_ARCH=win32`
-- `WINE_ENABLE_MULTILIB=1`
-- separate per-player `win32` prefixes
+| Port | Protocol | Direction | Purpose |
+|------|----------|-----------|---------|
+| **6081** | TCP HTTPS/WSS | Browser → NAS → P1 | Player 1 play page + `/stream` |
+| **6082** | TCP HTTPS/WSS | Browser → NAS → P2 | Player 2 play page + `/stream` |
+| 6080 | TCP (internal) | Host maps to 6081/6082 | Gateway inside container |
+| 4711 | TCP (internal) | helper → Pulse | Audio capture |
+| 23921 | TCP SSH | Admin | Deploy / backup |
 
-The 32-bit prefix was the key Wine-side stabilization. WoW64 and a 64-bit prefix were previously associated with repeated `gamemd.exe` crashes and resets. Do not switch back to a 64-bit prefix just because the host CPU is 64-bit.
+**Multiplayer game traffic:** UDP between `172.22.20.11` ↔ `172.22.20.12` on Docker bridge — **not** forwarded to internet.
 
-RA2/Yuri's Revenge is a 32-bit Windows game. A 64-bit host package can still be useful for runtime packaging, but a 64-bit Wine prefix is not expected to make `gamemd.exe` execute as a 64-bit process. Any 64-bit optimization should be limited to host-side helper processes or container/library choices unless proven otherwise.
+**Archived (do not forward):** WebRTC UDP 62001–62040, noVNC 5900, Moonlight ports — see `docs/ARCHIVED_EXPERIMENTS.md`.
 
-## Compatibility Settings
+### 3.2 Wire protocol (browser ↔ gateway)
 
-The prefix setup does not apply Windows 98 compatibility mode or any other Wine app-default Windows-version override for RA2 executables.
+Single WSS connection per player: `wss://<host>:6081/stream` (or 6082).
 
-Observed stability evidence suggests CPU pinning plus the `win32` prefix are the important fixes. Win98 compatibility mode alone did not fix crashes and is not part of the golden master. Existing prefixes should have legacy `HKEY_CURRENT_USER\Software\Wine\AppDefaults\RA2*.exe` and `gamemd.exe` overrides removed during startup.
+**Browser → server (JSON):**
 
-## Streaming Defaults
+| Message | Purpose |
+|---------|---------|
+| `start` | Connect with transport settings |
+| `reconfigure` | Live settings change |
+| `ping` | RTT measurement |
+| `mousemove`, `mousedown`, `mouseup`, `wheel` | Pointer input |
+| `keydown`, `keyup`, `keyup_all` | Keyboard |
 
-Current ultra defaults:
+**Server → browser (JSON):**
 
-- Display: `RESOLUTION=1024x768` at `RA2_DISPLAY_DEPTH=16` (16 bpp is the validated golden value; do not change depth casually — the game and capture path were proven at 16)
-- Stream size: follows the display (`native`); the transport menu can downscale per session to 960x720 / 800x600 / 640x480 on the GPU, with input coordinates mapped back onto the display
-- Video codec: `H264` (default); H.265 8-bit and H.265 10-bit are selectable hardware options
-- Hardware encode required: `ULTRA_VIDEO_REQUIRE_HW=1`
-- HEVC options exposed: `ULTRA_H265_TEST_ENABLED=1`
-- Frame rate: `24`
-- Bitrate: `900000`
-- Keyframe interval: `1` second
-- Audio codec: `opus`
-- Audio bitrate: `64000` by default; selectable higher Opus rates remain available for testing.
-- Audio frame size: `10` ms
-- Audio source rate: `44100`
-- Audio transport rate: `48000`
-- Encoder CPU isolation: `ULTRA_STREAM_CPUSET=2,3`
-- GPU convert/scale: `ULTRA_VIDEO_GPU_SCALE=1` (vapostproc front before the VA encoder)
-- TLS enabled: `ULTRA_GATEWAY_TLS=1`
+| Message | Purpose |
+|---------|---------|
+| `hello`, `ready` | Session + active settings |
+| `video` | Base64 H.264/HEVC bitstream |
+| `audio` | Base64 Opus or PCM |
+| `pong` | RTT reply |
 
-The video pipeline uses a GPU front when `vapostproc` is available: cheap CPU RGB16->BGRx expand, then GPU color conversion/scaling/upload feeding zero-copy VA surfaces into the VA encoder (`vah264enc` or `vah265enc`). Measured on the J4125: pipeline-only CPU dropped from 20.5% to 12.3% of a core (~40%), and the production helper total (including base64/IO) dropped from ~23% to ~16%. `ULTRA_VIDEO_GPU_SCALE=0` reverts to the CPU convert pipeline at runtime without a rebuild, and upgrades keep the previous image tagged `ra2-lan-party:ultra-prev` as the rollback path.
+Video/audio use base64 in JSON (~33% overhead — known improvement area).
 
-H.265 hardware encode is verified on both players: the i965 driver exposes `VAProfileHEVCMain` and `VAProfileHEVCMain10` encode entrypoints, and `vah265enc` accepts NV12 (8-bit) and P010_10LE (10-bit, `main-10` profile) through the same GPU front at the same measured pipeline cost as H.264 (~14% of one core at 1024x768@24). The gateway maps the UI's `H265_10` choice to `ULTRA_VIDEO_CODEC=H265` + `ULTRA_VIDEO_BIT_DEPTH=10` for the helper. Browser decode strings: `hev1.1.6.L93.B0` (8-bit) and `hev1.2.4.L93.B0` (10-bit), with `hvc1` fallbacks; clients without 10-bit HEVC decode degrade to 8-bit HEVC, then H.264. H.264 remains the default codec until HEVC has longer gameplay stability coverage. Because the game renders at 16 bpp, 10-bit mainly reduces encoder banding today and becomes more meaningful at `RA2_DISPLAY_DEPTH=24` (unproven for gameplay; not golden).
-
-Compare H.265 using lower target bitrates, not the same bitrate as H.264. The VA encoder is rate-controlled, so equal target bitrates produce similar bandwidth and may look visually identical on low-motion RA2 screens.
-
-## Audio And Stream Sessions
-
-The browser must play only the user-selected stream audio. There is no parallel local test tone, media-element tone, or second audio path in the ultra client.
-
-- Default transport menu: `opus` encoder, `64000` bps, `44100` Hz source, `48000` Hz Opus transport
-- The `Enable audio` button unlocks Web Audio for the selected stream; it does not inject generated tones
-- Reconnect and transport changes clear queued WebAudio buffers and reset the Opus decoder
-- Audio packets whose codec does not match the selected encoder are ignored
-
-Each player container allows one active stream helper at a time. If a second browser connects to the same player, the gateway stops the previous helper and closes the older WebSocket. This prevents duplicate Opus playback when multiple tabs or stale sessions are open.
-
-Expected live check:
-
-```bash
-docker exec ra2-player-1 sh -lc 'pgrep -cx stream-helper || true'
-```
-
-During normal play there should be `0` or `1` `stream-helper` process, never `2`.
-
-## Diagnostics
-
-Per-player logs are kept under:
+### 3.3 NAS directory layout
 
 ```text
-/volume2/Data/App_Development/ra2-lan-party/logs/player1
-/volume2/Data/App_Development/ra2-lan-party/logs/player2
+/volume2/Data/App_Development/ra2-lan-party/
+  assets-game2/       ← ASSETS_DIR (NOT in backup — copyrighted)
+  prefixes/           ← Wine state + serials (IN backup)
+  project/            ← This repo (IN backup)
+  logs/player1,2/     ← Diagnostics (IN backup)
+  tls/                ← HTTPS certs (IN backup)
+  backups/            ← backup-golden-master.sh output
+  .env                ← Secrets (IN backup — protect archive)
 ```
 
-The launcher writes or collects:
+### 3.4 Key files and scripts
 
-- `wine-current.log`
-- `wine-previous.log`
-- `latest-crash.log`
-- `last-lockup.txt`
-- `crash-<timestamp>-<reason>.log`
-- `input-events.log`
-- gateway lifecycle logs
-- `video-diagnostics.log` for `/dev/dri`, `vainfo`, GStreamer, QSV/MSDK, and VA encoder discovery
-- recent process state, memory, disk, X window, and Wine status
-- Wine minidump helper output when available
+| Path | Role |
+|------|------|
+| `compose.yaml` | Two-player base, shared env anchor |
+| `compose.https.yaml` | TLS mounts |
+| `compose.ultra.yaml` | Ultra overlay, VA-API devices |
+| `container/Dockerfile.ultra` | Image build |
+| `container/ra2-stream-gateway.py` | HTTPS/WSS server, input via xdotool |
+| `container/stream-helper.c` | GStreamer capture/encode |
+| `container/remote-ultra/ultra-play.js` | Browser client |
+| `scripts/redeploy-ultra.sh` | Sync + recreate both players |
+| `scripts/restart-audio-ultra.sh` | Pulse → game → gateway |
+| `scripts/validate-env.sh` | Pre-flight `.env` |
+| `scripts/backup-golden-master.sh` | Image + runtime backup (no game files) |
+| `scripts/sync-to-nas.sh` | Mac → NAS rsync/tar |
+| `tests/test_project_contracts.py` | 77 contract tests |
 
-The crash signature seen before stabilization was:
+### 3.5 Container packages (Arch)
 
-- exception: `EXCEPTION_ACCESS_VIOLATION (c0000005)`
-- process: `gamemd.exe`
-- stable fault address: `0x007BC806`
-- bad read pointer varied between crashes
+**Runtime highlights:** Wine 10.8 (Kron4ek), GStreamer + gst-plugin-va, PulseAudio, Xvfb, Openbox, Python 3 + websockets, xdotool, supervisor.
 
-Minidump capture can fail when the process is already dying. The text crash report and live process/affinity checks are often more reliable.
+**Build removes:** `/usr/lib/dri/iHD_drv_video.so` — forces stable `i965` on Gemini Lake.
 
-## Deployment Commands
+**Compiled:** `stream-helper` from `stream-helper.c` via gcc + GStreamer pkg-config.
 
-Use the active NAS project directory:
+### 3.6 Required `.env` keys
 
 ```bash
+PLAYER1_SERIAL=<unique>
+PLAYER2_SERIAL=<different>
+VNC_PASSWORD=<shared>
+ASSETS_DIR=.../assets-game2
+NAS_PUBLIC_HOSTNAME=peterjfrancoiii2.synology.me
+PREFIX1_DIR=.../prefixes/player1-win32
+PREFIX2_DIR=.../prefixes/player2-win32
+LOGS_DIR=.../logs
+TLS_DIR=.../tls
+RENDER_GID=937
+VIDEO_GID=44
+```
+
+---
+
+## 4. Replication checklist (agent / developer)
+
+```bash
+# 1. Clone repo, copy to NAS project/
+# 2. Prepare dirs
 cd /volume2/Data/App_Development/ra2-lan-party/project
+sh scripts/prepare-nas.sh
+cp .env.example .env   # edit serials, VNC_PASSWORD, ASSETS_DIR
+sh scripts/validate-env.sh
+sh scripts/generate-tls-certs.sh   # if tls/ empty
+
+# 3. Stage game files separately (legal — not in repo)
+sh scripts/ingest-assets.sh /path/to/RA2
+
+# 4. Build + deploy both players
+RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
+
+# 5. Verify
+python3 -m pytest tests/ -q
+curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6081/
+curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6082/
+```
+
+**From Mac after edits:**
+
+```bash
+NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
+```
+
+**Manual play test:** connect, audio, game mode (fullscreen + lock), dual cursors, multiplayer LAN discovery, 10+ min stable gameplay.
+
+---
+
+## 5. Known bugs and fixes
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Map load freeze | Never rewrite game INI in `start_helper()` — only at gamemd launch |
+| 2 | HEVC missing from menu | Leave `ULTRA_STREAM_CODEC_LOCK` empty |
+| 3 | Stale code after sync | Always `--force-recreate` containers |
+| 4 | SSH LAN timeout | Use `NAS_HOST=MediaServer2` (DDNS) |
+| 5 | Player 2 URL dead | Deploy both players; forward TCP 6082 |
+| 6 | `VNC_PASSWORD` missing | Add shared `VNC_PASSWORD` to `.env` |
+| 7 | Silent audio after Pulse restart | `restart-audio-ultra.sh` |
+| 8 | gamemd crash / lockup | CPU pin game cores 0/1, encode 2/3 |
+| 9 | VA-API black video | Remove iHD; use `LIBVA_DRIVER_NAME=i965` |
+| 10 | VAProfileNone on DSM | `enable-host-transcode.sh` |
+| 11 | Low RAM OOM | `two-player-low` profile; upgrade RAM |
+| 12 | HEVC decode fail in browser | Auto-fallback H265_10 → H265 → H264 |
+| 13 | Old client cached | Hard refresh; bump `SETTINGS_VERSION` |
+| 14 | WebCodecs blocked on HTTP | Use HTTPS overlay |
+| 15 | Multiplayer LAN fail | `wsock32.dll` + bridge network |
+| 16 | Game mode flicker / disconnect | Don't exit game mode on `blur`; use `gameModeBusy` grace |
+| 17 | Game mode instant kick-out | Request FS + pointer lock same user gesture; no await between |
+| 18 | Mouse dead in game mode | Document-level capture listeners (lock targets `#gameSurface`) |
+| 19 | Stuck **L** key on Ctrl+Alt+L | Shortcut handled in capture phase; never forwarded; `releasePressedKeys()` on enter |
+| 20 | redeploy websockify false positive | Verify with `curl` + `docker ps` — container may still be healthy |
+
+---
+
+## 6. Benchmarks and improvements
+
+### 6.1 Measured on DS225+ (J4125, production)
+
+| Metric | Value |
+|--------|-------|
+| Ultra image size | ~3.41 GB |
+| Per-container RAM | ~240–260 MB of 512 MB limit |
+| `gamemd.exe` CPU | ~75–100% of one core (pinned) |
+| `stream-helper` CPU | ~12–16% of one core (with GPU convert) |
+| Gateway CPU while streaming | ~9% of one core |
+| Effective stream fps | ~22 fps at 24 fps target |
+| GPU pipeline vs CPU convert | **−40%** helper CPU with `vapostproc` |
+
+**Pipeline benchmarks (20 s, cores 2–3):**
+
+| Pipeline | CPU |
+|----------|-----|
+| Capture only | 1.8% |
+| CPU convert → vah264enc (old) | 20.5% |
+| GPU vapostproc → vah264enc (current) | 12.3% |
+| GPU → vah265enc 10-bit | 14.2% |
+
+### 6.2 Potential improvements (not on default path)
+
+| Improvement | Expected gain | Risk |
+|-------------|---------------|------|
+| `vah264lpenc` low-power encoder | ~14% more helper CPU savings | Encoder swap — needs validation |
+| Binary WSS frames (not base64 JSON) | −33% bandwidth, lower gateway CPU | Protocol + client change |
+| Host RAM upgrade to 6+ GB | Eliminate swap thrashing | Hardware cost |
+| `SETTINGS_VERSION` cache bust | Cleaner client upgrades | Trivial |
+
+**Rollback levers:** `ULTRA_VIDEO_GPU_SCALE=0`; tag `ra2-lan-party:ultra-prev` before image changes.
+
+---
+
+## 7. Stability invariants (never bypass)
+
+1. CPU affinity — game on 0/1, encode on 2/3, watchdog re-pin
+2. Wine `amd64` + `win32` prefix + multilib
+3. Pulse restart → must restart game
+4. One stream-helper per active session
+5. Game INI sync at launch only — not during helper start
+6. Opus 48 kHz end-to-end
+7. Full input forwarding — no broad key guards
+8. Game mode: `#gameSurface` for both FS and pointer lock; document-level mouse capture when locked
+9. Ctrl+Alt+L never forwarded as game keydown
+
+---
+
+## 8. Backup and restore
+
+### 8.1 Create backup (no game files)
+
+```bash
+# On NAS
+cd /volume2/Data/App_Development/ra2-lan-party/project
+sh scripts/backup-golden-master.sh
+
+# From Mac
+NAS_HOST=MediaServer2 sh scripts/backup-golden-master.sh
+```
+
+Output: `/volume2/Data/App_Development/ra2-lan-party/backups/golden-master-YYYYMMDD-HHMMSS/`
+
+- `ra2-lan-party-ultra-image.tar.gz` — Docker image
+- `ra2-golden-master-runtime.tar.gz` — project, prefixes, tls, logs, .env
+- **Excludes:** `assets/`, `assets-game1/`, `assets-game2/`, `RA2Yuri_Game1/`
+
+### 8.2 Restore sketch
+
+```bash
+docker load < ra2-lan-party-ultra-image.tar.gz
+tar -xzf ra2-golden-master-runtime.tar.gz -C /volume2/Data/App_Development/ra2-lan-party
+# Re-stage game files to assets-game2 separately
 RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ```
 
-Equivalent compose stack:
+---
+
+## 9. Verification
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml up -d
-```
-
-Recreate both golden player containers:
-
-```bash
-docker compose --env-file .env -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml up -d --no-build --force-recreate ra2-player-1 ra2-player-2
-```
-
-## Verification
-
-Minimum verification after changes:
-
-```bash
-python3 -m pytest tests/test_project_contracts.py -q
+python3 -m pytest tests/ -q                           # expect 77 passed
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
+curl -sk -o /dev/null -w "6081=%{http_code}\n" https://peterjfrancoiii2.synology.me:6081/
+curl -sk -o /dev/null -w "6082=%{http_code}\n" https://peterjfrancoiii2.synology.me:6082/
+docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
 ```
 
-Live process verification on the NAS:
+---
 
-```bash
-docker exec ra2-player-1 sh -lc 'echo RA2_GAME_CPUSET=$RA2_GAME_CPUSET; pgrep -x gamemd.exe | xargs -r taskset -pc'
-docker exec ra2-player-2 sh -lc 'echo RA2_GAME_CPUSET=$RA2_GAME_CPUSET; pgrep -x gamemd.exe | xargs -r taskset -pc'
-```
+## 10. Document index
 
-Manual gameplay verification should include:
+| Doc | Use |
+|-----|-----|
+| **This file** | Authoritative golden master |
+| `README.md` | Repo entry point |
+| `docs/ULTRA_LIGHT_ARCH_STREAMING.md` | Transport menu shorthand |
+| `docs/HTTPS.md` | TLS options |
+| `docs/NAS_DEPLOY_STATUS.md` | Operator snapshot |
+| `docs/ARCHIVED_EXPERIMENTS.md` | Deprecated paths |
 
-- both players opening the root stream URLs
-- mouse buttons and wheel
-- keyboard input, including Alt/Meta paths that browsers expose
-- several minutes of real gameplay without `gamemd.exe` crash/restart
-- checking that player 2 remains pinned to CPU 1 after `gamemd.exe` appears
-
-## Fine Tuning Guidance
-
-Safe tuning areas:
-
-- H.264 bitrate and quality presets
-- selecting H.265 8-bit / 10-bit in the transport menu (hardware-verified; falls back to H.264 automatically)
-- per-session stream resolution downscales (960x720 / 800x600 / 640x480)
-- frame rate between low and balanced values
-- Opus bitrate and frame size
-- mouse move polling rate
-- diagnostics verbosity
-
-High-risk tuning areas:
-
-- CPU affinity behavior
-- Wine prefix architecture
-- replacing `win32` prefix with WoW64 or `win64`
-- adding input guards
-- changing `RESOLUTION` or `RA2_DISPLAY_DEPTH` (restarts the game display; 1024x768x16 is the proven configuration)
-- making H.265 the default codec before long gameplay coverage
-- adding heavyweight desktop remoting processes back into the primary container
-
-When optimizing, change one high-risk variable at a time and keep the golden-master rollback path intact.
-
-## Current Cleanup Candidates
-
-These are not part of the golden-master proof and may be simplified after the descriptor is saved:
-
-- tighten minidump behavior if Wine attach timing can be improved
-- prune obsolete experimental browser paths only after confirming they are not needed as fallbacks
-
-Do not treat cleanup as permission to change the core stability invariant: `gamemd.exe` must stay pinned to a single assigned CPU.
+**Lock date:** June 2026. Do not deploy archived compose overlays on production NAS.

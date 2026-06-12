@@ -53,38 +53,118 @@ DIAGNOSTIC_DIR = Path(
 INPUT_TRACE = Path(os.environ.get("ULTRA_INPUT_TRACE", str(DIAGNOSTIC_DIR / "input-events.log")))
 GATEWAY_LOG = Path(os.environ.get("ULTRA_GATEWAY_LOG", str(DIAGNOSTIC_DIR / "gateway.log")))
 DISPLAY = os.environ.get("DISPLAY", ":1")
+DISPLAY_ENV = Path(os.environ.get("ULTRA_DISPLAY_ENV", "/home/commander/.ra2/display.env"))
+ENSURE_INI_LINKS = Path(os.environ.get("ULTRA_ENSURE_INI_LINKS", "/opt/ra2/ensure-game-ini-links.sh"))
+# Resolution is fixed at container boot (RESOLUTION / display.env) and game launch
+# (sync-game-transport.sh). The gateway never changes native or stream dimensions.
+
+
+def _read_display_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not DISPLAY_ENV.is_file():
+        return values
+    try:
+        for line in DISPLAY_ENV.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    except Exception:
+        return values
+    return values
+
+
+def _default_resolution() -> str:
+    saved = _read_display_env().get("RESOLUTION", "").lower()
+    if saved and "x" in saved:
+        return saved
+    return os.environ.get("RESOLUTION", "960x720").lower()
 
 
 def _display_dims() -> tuple[int, int]:
-    """Game display size: ULTRA_VIDEO_WIDTH/HEIGHT override, else RESOLUTION."""
-    res = os.environ.get("RESOLUTION", "1024x768").lower()
+    """Native game display size from display.env, then container env."""
+    saved = _read_display_env()
+    res = saved.get("RESOLUTION") or os.environ.get("RESOLUTION", "960x720")
+    res = str(res).lower()
     try:
-        res_w, res_h = (int(part) for part in res.split("x", 1))
+        width, height = (int(part) for part in res.split("x", 1))
     except ValueError:
-        res_w, res_h = 1024, 768
+        width, height = 1024, 768
     raw_w = os.environ.get("ULTRA_VIDEO_WIDTH", "").strip()
     raw_h = os.environ.get("ULTRA_VIDEO_HEIGHT", "").strip()
+    if not raw_w and not raw_h:
+        return max(1, width), max(1, height)
     try:
-        width = int(raw_w) if raw_w else res_w
-        height = int(raw_h) if raw_h else res_h
+        width = int(raw_w) if raw_w else width
+        height = int(raw_h) if raw_h else height
     except ValueError:
-        width, height = res_w, res_h
+        pass
     return max(1, width), max(1, height)
+
+
+def refresh_display_dims() -> tuple[int, int]:
+    global VIDEO_WIDTH, VIDEO_HEIGHT
+    VIDEO_WIDTH, VIDEO_HEIGHT = _display_dims()
+    return VIDEO_WIDTH, VIDEO_HEIGHT
+
+
+def _game_process_running() -> bool:
+    game_process = os.environ.get("ULTRA_GAME_PROCESS", "gamemd.exe")
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", game_process],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _ensure_game_ini_links() -> None:
+    if not ENSURE_INI_LINKS.is_file():
+        return
+    try:
+        subprocess.run(
+            ["/bin/sh", str(ENSURE_INI_LINKS)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"[ultra-gateway] ini link ensure failed: {exc}", flush=True)
 
 
 VIDEO_WIDTH, VIDEO_HEIGHT = _display_dims()
 
+# 480p / 720p / 1080p tiers (4:3). Exposed to Wine via configure-display-modes.sh.
+RESOLUTION_TIERS: dict[str, tuple[int, int]] = {
+    "480p": (640, 480),
+    "720p": (960, 720),
+    "1080p": (1440, 1080),
+}
+GAME_DISPLAY_MODES: tuple[tuple[int, int], ...] = tuple(RESOLUTION_TIERS.values())
+SYNC_AUDIO_TRANSPORT = Path(
+    os.environ.get("ULTRA_SYNC_AUDIO_TRANSPORT", "/opt/ra2/sync-audio-transport.sh")
+)
+MAX_DISPLAY_WIDTH = max(width for width, _ in GAME_DISPLAY_MODES)
+MAX_DISPLAY_HEIGHT = max(height for _, height in GAME_DISPLAY_MODES)
+MIN_DISPLAY_WIDTH = min(width for width, _ in GAME_DISPLAY_MODES)
+MIN_DISPLAY_HEIGHT = min(height for _, height in GAME_DISPLAY_MODES)
+MAX_VIDEO_FPS = 30
 VIDEO_QUALITY_PRESETS = {
     "low": {"fps": 20},
     "balanced": {"fps": 24},
-    "sharp": {"fps": 24},
+    "sharp": {"fps": MAX_VIDEO_FPS},
 }
 ALLOWED_VIDEO_QUALITY = frozenset(VIDEO_QUALITY_PRESETS)
 ALLOWED_VIDEO_BITRATES = frozenset({300000, 450000, 600000, 900000, 1200000, 1600000, 2000000})
-# Encode resolutions the UI may request. "native" follows the game display
-# (VIDEO_WIDTH x VIDEO_HEIGHT); fixed sizes downscale on the GPU before encode
-# and input coordinates are mapped back onto the display.
-ALLOWED_VIDEO_RESOLUTIONS = ("native", "960x720", "800x600", "640x480")
+ALLOWED_VIDEO_RESOLUTIONS = tuple(
+    f"{width}x{height}" for width, height in GAME_DISPLAY_MODES
+)
 ALLOWED_VIDEO_CODECS = ("H264", "H265", "H265_10")
 ALLOWED_AUDIO_QUALITY = frozenset({"44100", "48000"})
 ALLOWED_AUDIO_BITRATES = frozenset({64000, 96000, 128000})
@@ -169,11 +249,63 @@ def _vah265enc_supports_p010() -> bool:
     return supported
 
 
-def _stream_size(resolution: str) -> tuple[int, int]:
-    if resolution == "native":
-        return VIDEO_WIDTH, VIDEO_HEIGHT
-    width, _, height = resolution.partition("x")
-    return int(width), int(height)
+def _tier_for_dims(width: int, height: int) -> str:
+    if (width, height) in GAME_DISPLAY_MODES:
+        for tier, dims in RESOLUTION_TIERS.items():
+            if dims == (width, height):
+                return tier
+    best_tier = "720p"
+    best_dist = 10**9
+    for tier, (_, tier_height) in RESOLUTION_TIERS.items():
+        dist = abs(height - tier_height)
+        if dist < best_dist:
+            best_dist = dist
+            best_tier = tier
+    return best_tier
+
+
+def _snap_to_tier_dims(width: int, height: int) -> tuple[int, int]:
+    return RESOLUTION_TIERS[_tier_for_dims(width, height)]
+
+
+def _is_allowed_game_resolution(width: int, height: int) -> bool:
+    # Only exact 480p/720p/1080p tiers. RA2 briefly reports values like
+    # 1024x768 during map load; treating those as real changes restarts Xvfb
+    # and freezes the game.
+    return (width, height) in GAME_DISPLAY_MODES
+
+
+def _sync_audio_transport(active: dict) -> None:
+    if not SYNC_AUDIO_TRANSPORT.is_file():
+        return
+    try:
+        subprocess.run(
+            [
+                "/bin/sh",
+                str(SYNC_AUDIO_TRANSPORT),
+                str(active["audioQuality"]),
+                str(active["audioTransportRate"]),
+                str(active["audioEncoder"]),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"[ultra-gateway] audio transport sync failed: {exc}", flush=True)
+
+
+def _configured_display_dims() -> tuple[int, int]:
+    """Boot-time display size from display.env / RESOLUTION only (never live X11 or INI)."""
+    width, height = refresh_display_dims()
+    if _is_allowed_game_resolution(width, height):
+        return width, height
+    return _snap_to_tier_dims(width, height)
+
+
+def _format_display_resolution(width: int, height: int) -> str:
+    return f"{width}x{height}"
 
 
 def _h265_unavailable_reason() -> str:
@@ -243,59 +375,82 @@ def _audio_encoder_available(encoder: str) -> bool:
 def default_settings() -> dict:
     quality = "balanced"
     preset = VIDEO_QUALITY_PRESETS[quality]
+    display_w, display_h = _configured_display_dims()
     return {
         "videoQuality": quality,
-        "videoCodec": os.environ.get("ULTRA_VIDEO_CODEC", "H264").upper(),
-        "videoResolution": "native",
+        "videoCodec": os.environ.get("ULTRA_VIDEO_CODEC", "H265_10").upper(),
+        "displayResolution": _format_display_resolution(display_w, display_h),
         "audioEncoder": os.environ.get("ULTRA_AUDIO_CODEC", "opus").lower(),
-        "audioQuality": str(int(os.environ.get("ULTRA_AUDIO_RATE", "44100"))),
+        "audioQuality": (
+            "48000"
+            if os.environ.get("ULTRA_AUDIO_CODEC", "opus").lower() == "opus"
+            else str(int(os.environ.get("ULTRA_AUDIO_RATE", "44100")))
+        ),
         "audioBitrate": int(os.environ.get("ULTRA_AUDIO_BITRATE", "64000")),
-        "audioTransportRate": int(os.environ.get("ULTRA_AUDIO_TRANSPORT_RATE", "48000")),
-        "inputMoveHz": int(os.environ.get("ULTRA_INPUT_MOVE_HZ", "125")),
-        "videoBitrate": int(os.environ.get("ULTRA_VIDEO_BITRATE", "900000")),
-        "videoFps": int(os.environ.get("ULTRA_VIDEO_FPS", str(preset["fps"]))),
+        # Native Pulse capture and stream encode always share one rate.
+        "audioTransportRate": (
+            48000
+            if os.environ.get("ULTRA_AUDIO_CODEC", "opus").lower() == "opus"
+            else int(os.environ.get("ULTRA_AUDIO_RATE", "44100"))
+        ),
+        "inputMoveHz": int(os.environ.get("ULTRA_INPUT_MOVE_HZ", "60")),
+        "videoBitrate": int(os.environ.get("ULTRA_VIDEO_BITRATE", "2000000")),
+        "videoFps": min(
+            int(os.environ.get("ULTRA_VIDEO_FPS", str(preset["fps"]))),
+            MAX_VIDEO_FPS,
+        ),
     }
 
 
 def get_available_options() -> dict:
-    if AVAILABLE_CACHE:
-        return AVAILABLE_CACHE
+    if not AVAILABLE_CACHE:
+        video_codecs = []
+        unavailable_video = {}
+        for codec in ALLOWED_VIDEO_CODECS:
+            if _video_codec_available(codec):
+                video_codecs.append(codec)
+            elif codec == "H265":
+                unavailable_video[codec] = _h265_unavailable_reason()
+            elif codec == "H265_10":
+                unavailable_video[codec] = _h265_10_unavailable_reason()
+            else:
+                unavailable_video[codec] = "hardware encoder not found on server"
 
-    video_codecs = []
-    unavailable_video = {}
-    for codec in ALLOWED_VIDEO_CODECS:
-        if _video_codec_available(codec):
-            video_codecs.append(codec)
-        elif codec == "H265":
-            unavailable_video[codec] = _h265_unavailable_reason()
-        elif codec == "H265_10":
-            unavailable_video[codec] = _h265_10_unavailable_reason()
-        else:
-            unavailable_video[codec] = "hardware encoder not found on server"
+        audio_encoders = []
+        unavailable_audio = {}
+        for encoder in ("opus", "pcm"):
+            if _audio_encoder_available(encoder):
+                audio_encoders.append(encoder)
+            else:
+                unavailable_audio[encoder] = "encoder not found on server"
 
-    audio_encoders = []
-    unavailable_audio = {}
-    for encoder in ("opus", "pcm"):
-        if _audio_encoder_available(encoder):
-            audio_encoders.append(encoder)
-        else:
-            unavailable_audio[encoder] = "encoder not found on server"
+        stream_codec_lock = os.environ.get("ULTRA_STREAM_CODEC_LOCK", "").strip().upper()
+        if stream_codec_lock == "H264":
+            for codec in list(video_codecs):
+                if codec != "H264":
+                    unavailable_video[codec] = "server locked to H264 for stable mission play"
+            video_codecs = [codec for codec in video_codecs if codec == "H264"]
 
-    available = {
-        "videoQuality": sorted(ALLOWED_VIDEO_QUALITY),
-        "videoBitrate": sorted(ALLOWED_VIDEO_BITRATES),
-        "videoCodec": video_codecs,
-        "videoResolution": list(ALLOWED_VIDEO_RESOLUTIONS),
-        "audioEncoder": audio_encoders,
-        "audioQuality": sorted(ALLOWED_AUDIO_QUALITY),
-        "audioBitrate": sorted(ALLOWED_AUDIO_BITRATES),
-        "inputMoveHz": sorted(ALLOWED_INPUT_HZ),
-        "unavailable": {
-            "audioEncoder": unavailable_audio,
-            "videoCodec": unavailable_video,
-        },
-    }
-    AVAILABLE_CACHE.update(available)
+        AVAILABLE_CACHE.update(
+            {
+                "videoQuality": sorted(ALLOWED_VIDEO_QUALITY),
+                "videoBitrate": sorted(ALLOWED_VIDEO_BITRATES),
+                "videoCodec": video_codecs,
+                "audioEncoder": audio_encoders,
+                "audioQuality": sorted(ALLOWED_AUDIO_QUALITY),
+                "audioBitrate": sorted(ALLOWED_AUDIO_BITRATES),
+                "inputMoveHz": sorted(ALLOWED_INPUT_HZ),
+                "streamCodecLock": stream_codec_lock if stream_codec_lock else None,
+                "unavailable": {
+                    "audioEncoder": unavailable_audio,
+                    "videoCodec": unavailable_video,
+                },
+            }
+        )
+
+    available = dict(AVAILABLE_CACHE)
+    display_w, display_h = _configured_display_dims()
+    available["displayResolution"] = _format_display_resolution(display_w, display_h)
     return available
 
 
@@ -318,7 +473,7 @@ def validate_settings(requested: Optional[dict]) -> dict:
         quality = defaults["videoQuality"]
     active["videoQuality"] = quality
     preset = VIDEO_QUALITY_PRESETS[quality]
-    active["videoFps"] = preset["fps"]
+    active["videoFps"] = min(preset["fps"], MAX_VIDEO_FPS)
 
     try:
         video_bitrate = int(requested.get("videoBitrate", defaults["videoBitrate"]))
@@ -384,20 +539,21 @@ def validate_settings(requested: Optional[dict]) -> dict:
             }
         )
         codec = "H264" if _video_codec_available("H264") else defaults["videoCodec"]
-    active["videoCodec"] = codec
-
-    resolution = str(requested.get("videoResolution", defaults["videoResolution"])).lower()
-    if resolution not in ALLOWED_VIDEO_RESOLUTIONS:
+    stream_codec_lock = os.environ.get("ULTRA_STREAM_CODEC_LOCK", "").strip().upper()
+    if stream_codec_lock == "H264" and codec != "H264":
         fallbacks.append(
             {
-                "field": "videoResolution",
-                "requested": resolution,
-                "active": defaults["videoResolution"],
-                "reason": "unsupported stream resolution",
+                "field": "videoCodec",
+                "requested": codec,
+                "active": "H264",
+                "reason": "server locked to H264 for stable mission play",
             }
         )
-        resolution = defaults["videoResolution"]
-    active["videoResolution"] = resolution
+        codec = "H264"
+    active["videoCodec"] = codec
+
+    display_w, display_h = _configured_display_dims()
+    active["displayResolution"] = _format_display_resolution(display_w, display_h)
 
     audio_encoder = str(requested.get("audioEncoder", defaults["audioEncoder"])).lower()
     if audio_encoder not in ALLOWED_AUDIO_ENCODERS:
@@ -421,7 +577,6 @@ def validate_settings(requested: Optional[dict]) -> dict:
         )
         audio_encoder = "pcm"
     active["audioEncoder"] = audio_encoder
-    active["audioTransportRate"] = 48000 if audio_encoder == "opus" else int(active["audioQuality"])
 
     audio_quality = str(requested.get("audioQuality", defaults["audioQuality"]))
     if audio_quality not in ALLOWED_AUDIO_QUALITY:
@@ -434,7 +589,19 @@ def validate_settings(requested: Optional[dict]) -> dict:
             }
         )
         audio_quality = defaults["audioQuality"]
+    if audio_encoder == "opus" and audio_quality != "48000":
+        fallbacks.append(
+            {
+                "field": "audioQuality",
+                "requested": audio_quality,
+                "active": "48000",
+                "reason": "Opus uses 48 kHz natively; Pulse capture and transport align to 48 kHz",
+            }
+        )
+        audio_quality = "48000"
     active["audioQuality"] = audio_quality
+    native_rate = int(audio_quality)
+    active["audioTransportRate"] = native_rate
 
     try:
         audio_bitrate = int(requested.get("audioBitrate", defaults["audioBitrate"]))
@@ -472,7 +639,6 @@ def validate_settings(requested: Optional[dict]) -> dict:
         "requested": {
             "videoQuality": requested.get("videoQuality", defaults["videoQuality"]),
             "videoCodec": requested.get("videoCodec", defaults["videoCodec"]),
-            "videoResolution": requested.get("videoResolution", defaults["videoResolution"]),
             "videoBitrate": requested.get("videoBitrate", defaults["videoBitrate"]),
             "audioEncoder": requested.get("audioEncoder", defaults["audioEncoder"]),
             "audioQuality": requested.get("audioQuality", defaults["audioQuality"]),
@@ -484,23 +650,23 @@ def validate_settings(requested: Optional[dict]) -> dict:
     }
 
 
-def build_helper_env(active: dict) -> dict:
+def build_helper_env(active: dict, width: int, height: int) -> dict:
     codec = active["videoCodec"]
     # H265_10 is a UI-level codec choice; the helper sees H265 plus a bit depth.
     helper_codec = "H265" if codec == "H265_10" else codec
     bit_depth = "10" if codec == "H265_10" else "8"
-    stream_width, stream_height = _stream_size(active.get("videoResolution", "native"))
     return {
         "ULTRA_VIDEO_CODEC": helper_codec,
         "ULTRA_VIDEO_BIT_DEPTH": bit_depth,
         "ULTRA_VIDEO_BITRATE": str(active["videoBitrate"]),
         "ULTRA_VIDEO_FPS": str(active["videoFps"]),
-        "ULTRA_VIDEO_WIDTH": str(stream_width),
-        "ULTRA_VIDEO_HEIGHT": str(stream_height),
+        "ULTRA_VIDEO_WIDTH": str(width),
+        "ULTRA_VIDEO_HEIGHT": str(height),
         "ULTRA_AUDIO_CODEC": active["audioEncoder"],
         "ULTRA_AUDIO_BITRATE": str(active["audioBitrate"]),
         "ULTRA_AUDIO_RATE": active["audioQuality"],
-        "ULTRA_AUDIO_TRANSPORT_RATE": str(active["audioTransportRate"]),
+        "ULTRA_AUDIO_TRANSPORT_RATE": active["audioQuality"],
+        "DISPLAY": os.environ.get("DISPLAY", ":1"),
     }
 
 
@@ -552,29 +718,45 @@ class InputDispatcher:
         self.last_trace_move_at = 0.0
         self.last_wheel_at = 0.0
         self.active_keys: set[str] = set()
+        self.native_width = VIDEO_WIDTH
+        self.native_height = VIDEO_HEIGHT
         self.stream_width = VIDEO_WIDTH
         self.stream_height = VIDEO_HEIGHT
 
     def set_move_hz(self, move_hz: int) -> None:
         self.move_hz = max(30, min(250, int(move_hz)))
 
-    def set_stream_size(self, width: int, height: int) -> None:
-        self.stream_width = max(1, int(width))
-        self.stream_height = max(1, int(height))
+    def set_display_sizes(
+        self,
+        native_width: int,
+        native_height: int,
+        stream_width: int,
+        stream_height: int,
+    ) -> None:
+        self.native_width = max(1, int(native_width))
+        self.native_height = max(1, int(native_height))
+        self.stream_width = max(1, int(stream_width))
+        self.stream_height = max(1, int(stream_height))
 
     def _map_xy(self, event: dict) -> tuple[int, int]:
-        """Map stream-space pointer coords onto game display pixels.
-
-        The encoded stream may be downscaled (videoResolution), but xdotool
-        operates on the Xvfb display, so scale up before clamping.
-        """
-        x = _clamp_int(event.get("x", 0), 0, self.stream_width - 1)
-        y = _clamp_int(event.get("y", 0), 0, self.stream_height - 1)
-        if self.stream_width != VIDEO_WIDTH:
-            x = x * VIDEO_WIDTH // self.stream_width
-        if self.stream_height != VIDEO_HEIGHT:
-            y = y * VIDEO_HEIGHT // self.stream_height
-        return min(x, VIDEO_WIDTH - 1), min(y, VIDEO_HEIGHT - 1)
+        """Map stream-space pointer coords onto the native operating display."""
+        stream_x = _clamp_int(event.get("x", 0), 0, self.stream_width - 1)
+        stream_y = _clamp_int(event.get("y", 0), 0, self.stream_height - 1)
+        if (
+            self.stream_width == self.native_width
+            and self.stream_height == self.native_height
+        ):
+            return stream_x, stream_y
+        native_x = round(
+            stream_x * (self.native_width - 1) / max(1, self.stream_width - 1)
+        )
+        native_y = round(
+            stream_y * (self.native_height - 1) / max(1, self.stream_height - 1)
+        )
+        return (
+            _clamp_int(native_x, 0, self.native_width - 1),
+            _clamp_int(native_y, 0, self.native_height - 1),
+        )
 
     def _xdotool(self, args: list[str]) -> None:
         env = {**os.environ, "DISPLAY": DISPLAY}
@@ -647,28 +829,29 @@ class InputDispatcher:
         if kind == "mousedown":
             self._focus_game_window()
             self._trace_event(event)
-            x, y = self._map_xy(event)
             button = _clamp_int(event.get("button", 1), 1, 9)
-            self._xdotool(["mousemove", str(x), str(y)])
+            if "x" in event and "y" in event:
+                x, y = self._map_xy(event)
+                self._xdotool(["mousemove", str(x), str(y)])
             self._xdotool(["mousedown", str(button)])
             return
         if kind == "mouseup":
-            self._focus_game_window()
             self._trace_event(event)
             button = _clamp_int(event.get("button", 1), 1, 9)
-            x, y = self._map_xy(event)
-            self._xdotool(["mousemove", str(x), str(y)])
+            if "x" in event and "y" in event:
+                x, y = self._map_xy(event)
+                self._xdotool(["mousemove", str(x), str(y)])
             self._xdotool(["mouseup", str(button)])
             return
         if kind == "click":
             self._trace_event(event)
-            x, y = self._map_xy(event)
             button = _clamp_int(event.get("button", 1), 1, 9)
-            self._xdotool(["mousemove", str(x), str(y)])
+            if "x" in event and "y" in event:
+                x, y = self._map_xy(event)
+                self._xdotool(["mousemove", str(x), str(y)])
             self._xdotool(["click", str(button)])
             return
         if kind == "keydown":
-            self._focus_game_window()
             key = event.get("key")
             if key:
                 xkey = _xdotool_key(key)
@@ -685,7 +868,6 @@ class InputDispatcher:
                 self._xdotool(["keydown", xkey])
             return
         if kind == "keyup":
-            self._focus_game_window()
             key = event.get("key")
             if key:
                 xkey = _xdotool_key(key)
@@ -728,10 +910,94 @@ class StreamSession:
         self.active_settings = defaults
         self.requested_settings: dict = {}
         self.fallbacks: list[dict] = []
-        self.helper_env: dict = build_helper_env(defaults)
-        self.stream_width = int(self.helper_env["ULTRA_VIDEO_WIDTH"])
-        self.stream_height = int(self.helper_env["ULTRA_VIDEO_HEIGHT"])
+        display_w, display_h = _configured_display_dims()
+        self.helper_env: dict = build_helper_env(defaults, display_w, display_h)
+        self.native_width = display_w
+        self.native_height = display_h
+        self.stream_width = display_w
+        self.stream_height = display_h
+        self.known_display_dims = (display_w, display_h)
         self.replaced = False
+        self.stream_started = False
+
+    async def _send_ready(self, *, reason: str = "start") -> None:
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "reason": reason,
+                    "width": self.stream_width,
+                    "height": self.stream_height,
+                    "nativeWidth": self.native_width,
+                    "nativeHeight": self.native_height,
+                    "displayResolution": self.active_settings.get("displayResolution"),
+                    "player": PLAYER_ID,
+                    "requested": self.requested_settings,
+                    "active": self.active_settings,
+                    "available": get_available_options(),
+                    "fallbacks": self.fallbacks,
+                    "transport": {
+                        "video": (
+                            f"{self.active_settings['videoCodec']} "
+                            f"{self.stream_width}x{self.stream_height}@"
+                            f"{self.active_settings['videoBitrate']}bps/"
+                            f"{self.active_settings['videoFps']}fps"
+                        ),
+                        "audio": (
+                            f"{self.active_settings['audioEncoder']}@"
+                            f"{self.active_settings['audioBitrate']}bps/"
+                            f"{self.active_settings['audioQuality']}Hz"
+                        ),
+                        "input": f"{self.active_settings['inputMoveHz']}Hz",
+                    },
+                }
+            )
+        )
+
+    async def _sync_stream_state(self, *, restart_helper: bool) -> None:
+        width, height = _configured_display_dims()
+        prev_dims = (self.stream_width, self.stream_height)
+        prev_env = dict(self.helper_env)
+        next_env = build_helper_env(self.active_settings, width, height)
+
+        self.known_display_dims = (width, height)
+        self.native_width = width
+        self.native_height = height
+        self.stream_width = width
+        self.stream_height = height
+        self.active_settings["displayResolution"] = _format_display_resolution(width, height)
+        self.helper_env = next_env
+        self.input.set_display_sizes(width, height, width, height)
+        self.input.set_move_hz(self.active_settings["inputMoveHz"])
+        if restart_helper:
+            if (
+                self.helper
+                and self.helper.poll() is None
+                and (width, height) == prev_dims
+                and next_env == prev_env
+            ):
+                return
+            await self.stop_helper("reconfigure")
+            await self.start_helper()
+
+    async def _apply_transport_settings(
+        self,
+        msg: dict,
+        *,
+        restart_helper: bool,
+        become_active: bool,
+    ) -> None:
+        validated = validate_settings(msg.get("settings"))
+        self.requested_settings = validated["requested"]
+        self.active_settings = validated["active"]
+        self.fallbacks = validated["fallbacks"]
+
+        if become_active:
+            await self.become_active()
+        should_restart = restart_helper
+        await self._sync_stream_state(restart_helper=should_restart)
+        self.stream_started = True
+        await self._send_ready(reason="reconfigure" if not become_active else "start")
 
     async def become_active(self) -> None:
         global ACTIVE_SESSION
@@ -754,9 +1020,18 @@ class StreamSession:
                 ACTIVE_SESSION = None
 
     async def start_helper(self) -> None:
+        _ensure_game_ini_links()
         if self.helper and self.helper.poll() is None:
             return
         await self.stop_helper("restart")
+        try:
+            subprocess.run(
+                ["pkill", "-f", "/opt/ra2/stream-helper"],
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            pass
         print(
             f"[ultra-gateway] starting stream helper codec={self.active_settings['videoCodec']} "
             f"size={self.stream_width}x{self.stream_height} "
@@ -768,6 +1043,9 @@ class StreamSession:
             f"(player {PLAYER_ID})",
             flush=True,
         )
+        # Game INI/ddraw sync runs only at gamemd launch (start-game-ultra.sh).
+        # Rewriting game-work configs here races map load and freezes the mission.
+        _sync_audio_transport(self.active_settings)
         env = {**os.environ, **self.helper_env}
         self.helper = subprocess.Popen(
             build_helper_command(),
@@ -824,7 +1102,32 @@ class StreamSession:
             if line.startswith('{"type":"video"'):
                 self.frames_sent += 1
             await self.websocket.send(line)
-        await self.stop_helper("helper_eof")
+        if self.replaced:
+            await self.stop_helper("helper_eof")
+            return
+        await self._recover_helper_after_exit("helper_eof")
+
+    async def _recover_helper_after_exit(self, reason: str) -> None:
+        await self.stop_helper(reason)
+        if not self.stream_started or self.replaced:
+            return
+        print(
+            f"[ultra-gateway] stream helper exited ({reason}); restarting "
+            f"(player {PLAYER_ID})",
+            flush=True,
+        )
+        delay = 5.0 if _game_process_running() else 1.0
+        await asyncio.sleep(delay)
+        if self.replaced or not self.stream_started:
+            return
+        try:
+            await self.start_helper()
+            await self._send_ready(reason="helper_restart")
+        except Exception as exc:
+            print(
+                f"[ultra-gateway] stream helper restart failed: {exc}",
+                flush=True,
+            )
 
     async def handle_client_message(self, raw: str) -> None:
         try:
@@ -843,45 +1146,19 @@ class StreamSession:
             )
             return
         if msg.get("type") == "start":
-            validated = validate_settings(msg.get("settings"))
-            self.requested_settings = validated["requested"]
-            self.active_settings = validated["active"]
-            self.fallbacks = validated["fallbacks"]
-            self.helper_env = build_helper_env(self.active_settings)
-            self.stream_width = int(self.helper_env["ULTRA_VIDEO_WIDTH"])
-            self.stream_height = int(self.helper_env["ULTRA_VIDEO_HEIGHT"])
-            self.input.set_stream_size(self.stream_width, self.stream_height)
-            self.input.set_move_hz(self.active_settings["inputMoveHz"])
-            await self.become_active()
-            await self.start_helper()
-            await self.websocket.send(
-                json.dumps(
-                    {
-                        "type": "ready",
-                        "width": self.stream_width,
-                        "height": self.stream_height,
-                        "player": PLAYER_ID,
-                        "requested": self.requested_settings,
-                        "active": self.active_settings,
-                        "available": get_available_options(),
-                        "fallbacks": self.fallbacks,
-                        "transport": {
-                            "video": (
-                                f"{self.active_settings['videoCodec']} "
-                                f"{self.stream_width}x{self.stream_height}@"
-                                f"{self.active_settings['videoBitrate']}bps/"
-                                f"{self.active_settings['videoFps']}fps"
-                            ),
-                            "audio": (
-                                f"{self.active_settings['audioEncoder']}@"
-                                f"{self.active_settings['audioBitrate']}bps/"
-                                f"source{self.active_settings['audioQuality']}Hz"
-                                f"->transport{self.active_settings['audioTransportRate']}Hz"
-                            ),
-                            "input": f"{self.active_settings['inputMoveHz']}Hz",
-                        },
-                    }
-                )
+            await self._apply_transport_settings(
+                msg,
+                restart_helper=True,
+                become_active=True,
+            )
+            return
+        if msg.get("type") == "reconfigure":
+            if not self.stream_started:
+                return
+            await self._apply_transport_settings(
+                msg,
+                restart_helper=True,
+                become_active=False,
             )
             return
         if msg.get("type") == "stop":

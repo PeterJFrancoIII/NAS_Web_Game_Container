@@ -1,6 +1,8 @@
 # Moonlight / Sunshine / Wolf Experiment (DS225+)
 
-This is the **primary target streaming path** for low-latency play. The existing RA2 player containers (`ra2-player-1/2`) remain unchanged; Moonlight experiments run **beside** them until validation completes.
+> **Archived (June 2026):** Production play uses ultra browser streaming. See `docs/GOLDEN_MASTER.md` and `docs/ARCHIVED_EXPERIMENTS.md`. This document is kept for experiment reference only.
+
+This was the **target native streaming path** for low-latency play. The existing RA2 player containers (`ra2-player-1/2`) remain unchanged; Moonlight experiments run **beside** them until validation completes.
 
 ## Why Moonlight?
 

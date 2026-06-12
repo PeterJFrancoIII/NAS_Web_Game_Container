@@ -1,6 +1,8 @@
 # Selkies / Wayland Experiment (DS225+)
 
-This is an **optional side-by-side experiment**. The production RA2 remote-play path remains the Xvfb + `ximagesrc` + VA-API H.264 WebRTC stack in `compose.webrtc.yaml`.
+> **Archived / rejected (June 2026):** Production uses ultra browser streaming (`docs/GOLDEN_MASTER.md`). Selkies was too heavy for the DS225+.
+
+This was an **optional side-by-side experiment**.
 
 ## Why experiment?
 

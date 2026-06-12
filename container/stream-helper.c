@@ -45,24 +45,31 @@ static gboolean gpu_scale_requested(void) {
   return g_strcmp0(env_str("ULTRA_VIDEO_GPU_SCALE", "1"), "0") != 0;
 }
 
+#define OPUS_NATIVE_RATE 48000
+
 static gchar *audio_encoder_desc(gint audio_rate) {
   const gchar *codec = env_str("ULTRA_AUDIO_CODEC", "opus");
   gint bitrate = MAX(env_int("ULTRA_AUDIO_BITRATE", 64000), 1);
-  gint frame_ms = MAX(env_int("ULTRA_AUDIO_FRAME_MS", 10), 2);
-  gint transport_rate = env_int("ULTRA_AUDIO_TRANSPORT_RATE", 48000);
-
+  gint frame_ms = MAX(env_int("ULTRA_AUDIO_FRAME_MS", 20), 2);
   if (g_ascii_strcasecmp(codec, "opus") == 0) {
     if (!factory_exists("opusenc")) {
       g_printerr("[stream-helper] no Opus encoder found\n");
       return NULL;
     }
-    g_printerr("[stream-helper] using Opus audio encoder opusenc bitrate=%d source_rate=%d transport_rate=%d\n",
-               bitrate, audio_rate, transport_rate);
+    g_printerr(
+        "[stream-helper] using Opus audio encoder opusenc bitrate=%d capture=%d encode=%d\n",
+        bitrate, audio_rate, OPUS_NATIVE_RATE);
+    if (audio_rate == OPUS_NATIVE_RATE) {
+      return g_strdup_printf(
+          "opusenc bitrate=%d bitrate-type=0 complexity=0 frame-size=%d "
+          "audio-type=restricted-lowdelay inband-fec=false dtx=false",
+          bitrate, frame_ms);
+    }
     return g_strdup_printf(
-        "audio/x-raw,format=S16LE,rate=%d,channels=2 ! "
+        "audioresample ! audio/x-raw,format=S16LE,rate=%d,channels=2 ! "
         "opusenc bitrate=%d bitrate-type=0 complexity=0 frame-size=%d "
         "audio-type=restricted-lowdelay inband-fec=false dtx=false",
-        transport_rate, bitrate, frame_ms);
+        OPUS_NATIVE_RATE, bitrate, frame_ms);
   }
 
   if (g_ascii_strcasecmp(codec, "pcm") == 0) {
@@ -75,9 +82,8 @@ static gchar *audio_encoder_desc(gint audio_rate) {
 }
 
 static gint audio_output_rate(void) {
-  const gchar *codec = env_str("ULTRA_AUDIO_CODEC", "opus");
-  if (g_ascii_strcasecmp(codec, "opus") == 0) {
-    return env_int("ULTRA_AUDIO_TRANSPORT_RATE", 48000);
+  if (g_ascii_strcasecmp(env_str("ULTRA_AUDIO_CODEC", "opus"), "opus") == 0) {
+    return OPUS_NATIVE_RATE;
   }
   return env_int("ULTRA_AUDIO_RATE", 44100);
 }
@@ -204,8 +210,10 @@ static gchar *pipeline_desc(void) {
     g_free(encoder);
     return NULL;
   }
-  const gchar *queue =
+  const gchar *video_queue =
       "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream";
+  const gchar *audio_queue =
+      "queue max-size-buffers=12 max-size-bytes=0 max-size-time=200000000 leaky=no";
 
   gchar *desc;
   if (gpu_front_active) {
@@ -215,30 +223,30 @@ static gchar *pipeline_desc(void) {
      * conversion work is spent on them. */
     desc = g_strdup_printf(
         "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
-        "videorate max-rate=%d ! video/x-raw,framerate=%d/1 ! "
+        "videorate drop-only=true max-rate=%d ! video/x-raw,framerate=%d/1 ! "
         "%s ! videoconvert ! video/x-raw,format=BGRx ! "
         "vapostproc ! video/x-raw(memory:VAMemory),format=%s,width=%d,height=%d ! "
         "%s ! appsink name=vsink emit-signals=true max-buffers=1 drop=true sync=false "
         "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
         "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
-        "audioconvert ! audioresample quality=0 ! "
+        "audioconvert ! audio/x-raw,format=S16LE,rate=%d,channels=2 ! "
         "%s ! %s ! "
-        "appsink name=asink emit-signals=true max-buffers=4 drop=true sync=false",
-        display, fps, fps, queue, gpu_front_format, width, height, encoder, pulse_port,
-        audio_rate, audio_encoder, queue);
+        "appsink name=asink emit-signals=true max-buffers=12 drop=false sync=false",
+        display, fps, fps, video_queue, gpu_front_format, width, height, encoder, pulse_port,
+        audio_rate, audio_rate, audio_encoder, audio_queue);
   } else {
     desc = g_strdup_printf(
         "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
-        "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
+        "videorate drop-only=true max-rate=%d ! videoscale method=nearest-neighbour ! "
         "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
         "%s ! appsink name=vsink emit-signals=true max-buffers=1 drop=true sync=false "
         "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
         "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
-        "audioconvert ! audioresample quality=0 ! "
+        "audioconvert ! audio/x-raw,format=S16LE,rate=%d,channels=2 ! "
         "%s ! %s ! "
-        "appsink name=asink emit-signals=true max-buffers=4 drop=true sync=false",
-        display, fps, width, height, fps, queue, encoder, pulse_port, audio_rate, audio_encoder,
-        queue);
+        "appsink name=asink emit-signals=true max-buffers=12 drop=false sync=false",
+        display, fps, width, height, fps, video_queue, encoder, pulse_port, audio_rate, audio_rate,
+        audio_encoder, audio_queue);
   }
 
   g_free(encoder);

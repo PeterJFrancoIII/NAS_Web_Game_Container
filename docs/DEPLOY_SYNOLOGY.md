@@ -13,20 +13,20 @@ The containers use an internal Docker bridge, not macvlan. Player 1 is always `1
 
 | Path | Purpose | Documentation |
 |------|---------|---------------|
-| Moonlight + Sunshine/Wolf | **Primary** low-latency play | `docs/MOONLIGHT_EXPERIMENT.md` |
-| noVNC | Admin, recovery, debugging | §9 below |
-| WebRTC `remote.html` | Legacy browser fallback | §9 below |
-| Tailscale | Secure remote Moonlight | `docs/TAILSCALE.md` |
+| **Ultra Arch browser** | **Production** — HTTPS/WSS + WebCodecs | `docs/GOLDEN_MASTER.md`, `docs/ULTRA_LIGHT_ARCH_STREAMING.md` |
+| Moonlight + Sunshine/Wolf | Archived experiment | `docs/ARCHIVED_EXPERIMENTS.md` |
+| noVNC | Archived (base image; disabled in ultra) | §9 below |
+| WebRTC `remote.html` | Archived legacy fallback | §9 below |
+| Tailscale | Archived remote Moonlight | `docs/TAILSCALE.md` |
 
-Run host prerequisites before Moonlight experiments:
+Production deploy:
 
 ```bash
-sh scripts/check-host-prerequisites.sh
-sh scripts/check-moonlight-ready.sh
+RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
+RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 ```
 
-Production RAM baseline is **6 GB**. Stock 1.7 GB DS225+ RAM is acceptable for fallback/testing only.
-Prefer wired **2.5GbE or 1GbE** when measuring latency.
+**18 GB RAM** on the current NAS removes the old 6 GB upgrade gate. Prefer wired **2.5GbE or 1GbE** for remote play.
 
 ## 1. Copy Project To NAS
 
@@ -225,7 +225,30 @@ Use a trusted DSM certificate and proxy `https://MediaServer2.local/ra2-p1` → 
 
 ## 9. Connect Players
 
-### Moonlight (primary target)
+### Ultra browser (production)
+
+With `RA2_COMPOSE_ULTRA=1` and TLS enabled:
+
+```text
+Player 1 LAN:    https://192.168.0.193:6081/
+Player 2 LAN:    https://192.168.0.193:6082/
+Player 1 remote: https://peterjfrancoiii2.synology.me:6081/
+Player 2 remote: https://peterjfrancoiii2.synology.me:6082/
+```
+
+Forward external TCP `6081` and `6082` to the NAS. Click **Enable audio** on first visit. Hard-refresh after client upgrades.
+
+Audio maintenance:
+
+```bash
+sudo sh scripts/restart-audio-ultra.sh ra2-player-1
+```
+
+See `docs/GOLDEN_MASTER.md` for CPU affinity, Pulse↔Wine, and rollback rules.
+
+### Moonlight (archived experiment)
+
+See `docs/MOONLIGHT_EXPERIMENT.md` and `docs/ARCHIVED_EXPERIMENTS.md`.
 
 Deploy side-by-side experiments without stopping RA2 players:
 
@@ -246,7 +269,7 @@ sh scripts/check-moonlight-ready.sh
 sh scripts/compare-moonlight-webrtc.sh
 ```
 
-### noVNC (admin / recovery fallback)
+### noVNC (archived — base image only; disabled when `RA2_ENABLE_NOVNC_FALLBACK=0`)
 
 From client browsers on the LAN (use `https://` when TLS is enabled):
 
@@ -261,9 +284,9 @@ Use the VNC passwords from `.env`. Trust the self-signed certificate on first vi
 
 If the NAS uses the secondary LAN IP, set `NAS_LAN_IP` in `.env` and regenerate TLS if needed.
 
-### WebRTC remote play (legacy browser fallback)
+### WebRTC remote play (archived legacy browser fallback)
 
-WebRTC is **not** the long-term primary path. Use it only when Moonlight is unavailable or for debugging. If video is connected but the screen is blank, run:
+WebRTC is **not** the production path. See `docs/ARCHIVED_EXPERIMENTS.md`. Use it only when Moonlight is unavailable or for debugging. If video is connected but the screen is blank, run:
 
 ```bash
 sh scripts/check-webrtc-ice-reachability.sh
