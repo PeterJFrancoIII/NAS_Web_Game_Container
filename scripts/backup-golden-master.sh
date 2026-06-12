@@ -45,7 +45,11 @@ else
 fi
 
 echo "[backup] archiving runtime tree (no game files)"
-tar -czf "$BACKUP_DIR/ra2-golden-master-runtime.tar.gz" \
+TAR_EXTRA=""
+if command -v sudo >/dev/null 2>&1; then
+  TAR_EXTRA="sudo"
+fi
+$TAR_EXTRA tar -czf "$BACKUP_DIR/ra2-golden-master-runtime.tar.gz" \
   -C "$PROJECT_ROOT" \
   --exclude='assets' \
   --exclude='assets-game1' \
@@ -53,7 +57,7 @@ tar -czf "$BACKUP_DIR/ra2-golden-master-runtime.tar.gz" \
   --exclude='RA2Yuri_Game1' \
   --exclude='backups' \
   project prefixes tls logs .env 2>/dev/null || \
-tar -czf "$BACKUP_DIR/ra2-golden-master-runtime.tar.gz" \
+$TAR_EXTRA tar -czf "$BACKUP_DIR/ra2-golden-master-runtime.tar.gz" \
   -C "$PROJECT_ROOT" \
   --exclude='assets' \
   --exclude='assets-game1' \
