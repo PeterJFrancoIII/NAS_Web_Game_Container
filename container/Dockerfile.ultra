@@ -38,7 +38,7 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
       gstreamer gst-libav gst-plugin-va gst-plugins-bad gst-plugins-base \
       gst-plugins-good gst-plugins-ugly \
       libglvnd libva libva-intel-driver libva-utils mesa openbox pulseaudio pulseaudio-alsa \
-      python python-websockets supervisor tar xdotool xorg-server-xvfb xorg-xdpyinfo xorg-xrandr xz \
+      python python-websockets supervisor tar xdotool xorg-server-xvfb xorg-xdpyinfo xorg-xrandr xorg-xsetroot xz \
     && if [ "${WINE_ENABLE_MULTILIB}" = "1" ]; then pacman -S --needed --noconfirm \
       lib32-alsa-lib lib32-alsa-plugins lib32-fontconfig lib32-freetype2 \
       lib32-libglvnd lib32-libpulse lib32-libx11 lib32-libxcursor lib32-libxext \
@@ -46,17 +46,28 @@ RUN printf '\nDisableSandbox\nNoExtract = usr/share/doc/* usr/share/help/* usr/s
     && rm -f /usr/lib/dri/iHD_drv_video.so \
     && pacman -Scc --noconfirm \
     && useradd -m -u 1000 -s /bin/bash commander \
-    && mkdir -p /opt/ra2 /home/commander/game_assets /home/commander/.wine \
+    && mkdir -p /opt/ra2 /opt/ra2/config /home/commander/game_assets /home/commander/.wine \
     && chown -R commander:commander /opt/ra2 /opt/wine /home/commander
 
 COPY container/asound.conf /etc/asound.conf
 COPY container/pulse/ /opt/ra2/pulse/
 COPY --chown=commander:commander container/start-pulseaudio.sh /opt/ra2/start-pulseaudio.sh
 COPY --chown=commander:commander container/start-game-ultra.sh /opt/ra2/start-game-ultra.sh
+COPY --chown=commander:commander container/run-game-session.sh /opt/ra2/run-game-session.sh
+COPY --chown=commander:commander container/game-launcher.sh /opt/ra2/game-launcher.sh
+COPY --chown=commander:commander container/game-session-state.sh /opt/ra2/game-session-state.sh
+COPY --chown=commander:commander container/validate-game-id.sh /opt/ra2/validate-game-id.sh
+COPY --chown=commander:commander container/secure-game-select.sh /opt/ra2/secure-game-select.sh
+COPY --chown=commander:commander container/start-openbox-ultra.sh /opt/ra2/start-openbox-ultra.sh
+COPY --chown=commander:commander container/openbox/ /opt/ra2/openbox/
+COPY --chown=commander:commander config/games.json /opt/ra2/config/games.json
+COPY --chown=commander:commander config/aoe2-ddraw.ini /opt/ra2/config/aoe2-ddraw.ini
+COPY --chown=commander:commander config/starcraft-ddraw.ini /opt/ra2/config/starcraft-ddraw.ini
 COPY --chown=commander:commander container/cleanup-xvfb-display.sh /opt/ra2/cleanup-xvfb-display.sh
 COPY --chown=commander:commander container/start-xvfb-ultra.sh /opt/ra2/start-xvfb-ultra.sh
 COPY --chown=commander:commander container/configure-display-modes.sh /opt/ra2/configure-display-modes.sh
 COPY --chown=commander:commander container/apply-ultra-display.sh /opt/ra2/apply-ultra-display.sh
+COPY --chown=commander:commander container/switch-game-display.sh /opt/ra2/switch-game-display.sh
 COPY --chown=commander:commander container/sync-game-transport.sh /opt/ra2/sync-game-transport.sh
 COPY --chown=commander:commander container/ensure-game-ini-links.sh /opt/ra2/ensure-game-ini-links.sh
 COPY --chown=commander:commander container/sync-audio-transport.sh /opt/ra2/sync-audio-transport.sh
@@ -70,7 +81,12 @@ COPY --chown=commander:commander container/supervisord.ultra.conf /opt/ra2/super
 COPY --chown=commander:commander container/remote-ultra/ /opt/ra2/remote-ultra/
 
 RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/start-pulseaudio.sh \
-      /opt/ra2/cleanup-xvfb-display.sh /opt/ra2/start-game-ultra.sh /opt/ra2/start-xvfb-ultra.sh /opt/ra2/configure-display-modes.sh /opt/ra2/apply-ultra-display.sh /opt/ra2/sync-game-transport.sh /opt/ra2/ensure-game-ini-links.sh /opt/ra2/sync-audio-transport.sh /opt/ra2/start-stream-gateway.sh /opt/ra2/log-video-diagnostics.sh /opt/ra2/winedbg-minidump.sh /opt/ra2/healthcheck-ultra.sh \
+      /opt/ra2/cleanup-xvfb-display.sh /opt/ra2/start-game-ultra.sh /opt/ra2/run-game-session.sh \
+      /opt/ra2/game-launcher.sh /opt/ra2/game-session-state.sh /opt/ra2/validate-game-id.sh /opt/ra2/secure-game-select.sh \
+      /opt/ra2/start-openbox-ultra.sh /opt/ra2/start-xvfb-ultra.sh /opt/ra2/configure-display-modes.sh \
+      /opt/ra2/apply-ultra-display.sh /opt/ra2/switch-game-display.sh /opt/ra2/sync-game-transport.sh /opt/ra2/ensure-game-ini-links.sh \
+      /opt/ra2/sync-audio-transport.sh /opt/ra2/start-stream-gateway.sh /opt/ra2/log-video-diagnostics.sh \
+      /opt/ra2/winedbg-minidump.sh /opt/ra2/healthcheck-ultra.sh \
       /opt/ra2/ra2-stream-gateway.py /opt/ra2/stream-helper \
     && chown commander:commander /opt/ra2/stream-helper
 
@@ -92,7 +108,7 @@ ENV PATH="/opt/wine/bin:${PATH}" \
     ULTRA_VIDEO_CODEC=H264 \
     ULTRA_VIDEO_FPS=24 \
     RESOLUTION=1024x768 \
-    RA2_DISPLAY_DEPTH=24 \
+    RA2_DISPLAY_DEPTH=16 \
     RA2_ENABLE_NOVNC_FALLBACK=0
 
 EXPOSE 6080

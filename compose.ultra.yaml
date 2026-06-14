@@ -12,7 +12,7 @@ x-ra2-ultra-env: &ra2-ultra-env
   # to force a different encode size at deploy time.
   ULTRA_VIDEO_WIDTH: ${ULTRA_VIDEO_WIDTH:-}
   ULTRA_VIDEO_HEIGHT: ${ULTRA_VIDEO_HEIGHT:-}
-  RA2_DISPLAY_DEPTH: ${RA2_DISPLAY_DEPTH:-24}
+  RA2_DISPLAY_DEPTH: ${RA2_DISPLAY_DEPTH:-16}
   ULTRA_VIDEO_FPS: ${ULTRA_VIDEO_FPS:-24}
   ULTRA_GAME_MAX_FPS: ${ULTRA_GAME_MAX_FPS:-24}
   ULTRA_GAME_MAX_TICKS: ${ULTRA_GAME_MAX_TICKS:-0}
@@ -38,6 +38,12 @@ x-ra2-ultra-env: &ra2-ultra-env
   WEBRTC_ENABLED: "0"
   ULTRA_GAME_LOG_ROOT: /home/commander/ra2-logs-root
   ULTRA_GAME_HOST_LOG_DIR: ${LOGS_DIR:-/volume2/Data/App_Development/ra2-lan-party/logs}
+  GAME_LAUNCHER_ENABLED: ${GAME_LAUNCHER_ENABLED:-1}
+  # In-container paths (host bind sources use *_ASSETS_HOST in compose volumes):
+  AOE2_ASSETS_DIR: /home/commander/aoe2_assets
+  SC_ASSETS_DIR: /home/commander/sc_assets
+  SC_DISC_DIR: /home/commander/sc_disc
+  SC_STAGE: /home/commander/sc_staging
 
 x-ra2-ultra: &ra2-ultra
   image: ra2-lan-party:ultra
@@ -66,10 +72,23 @@ x-ra2-ultra: &ra2-ultra
     - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
     - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
     - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+    - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
+    - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+    - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
+    - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
+    - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
+    - ./container/secure-game-select.sh:/opt/ra2/secure-game-select.sh:ro
+    - ./container/start-openbox-ultra.sh:/opt/ra2/start-openbox-ultra.sh:ro
+    - ./container/openbox:/opt/ra2/openbox:ro
+    - ./config/games.json:/opt/ra2/config/games.json:ro
+    - ./config/aoe2-ddraw.ini:/opt/ra2/config/aoe2-ddraw.ini:ro
+    - ./config/aoe2-language:/opt/ra2/config/aoe2-language:ro
+    - ./config/starcraft-ddraw.ini:/opt/ra2/config/starcraft-ddraw.ini:ro
     - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
     - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
     - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
     - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+    - ./container/switch-game-display.sh:/opt/ra2/switch-game-display.sh:ro
     - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
     - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
     - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro
@@ -84,9 +103,89 @@ x-ra2-ultra: &ra2-ultra
 services:
   ra2-player-1:
     <<: *ra2-ultra
+    volumes:
+      - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1-win32}:/home/commander/.wine:rw
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
+      - ${AOE2_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2}:/home/commander/aoe2_assets:ro
+      - ${SC_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft}:/home/commander/sc_assets:ro
+      - ${SC_DISC_HOST:-/volume2/Data/Games/1 Packed - Compressed/StarCraft & Brood War}:/home/commander/sc_disc:ro
+      - ${SC_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft/.disc-staging}:/home/commander/sc_staging:ro
+      - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
+      - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+      - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
+      - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
+      - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
+      - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
+      - ./container/secure-game-select.sh:/opt/ra2/secure-game-select.sh:ro
+      - ./container/start-openbox-ultra.sh:/opt/ra2/start-openbox-ultra.sh:ro
+      - ./container/openbox:/opt/ra2/openbox:ro
+      - ./config/games.json:/opt/ra2/config/games.json:ro
+      - ./config/aoe2-ddraw.ini:/opt/ra2/config/aoe2-ddraw.ini:ro
+      - ./config/aoe2-language:/opt/ra2/config/aoe2-language:ro
+      - ./config/starcraft-ddraw.ini:/opt/ra2/config/starcraft-ddraw.ini:ro
+      - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
+      - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
+      - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
+      - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+      - ./container/switch-game-display.sh:/opt/ra2/switch-game-display.sh:ro
+      - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
+      - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
+      - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro
+      - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
+      - ./container/log-video-diagnostics.sh:/opt/ra2/log-video-diagnostics.sh:ro
+      - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
+      - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
+      - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro
+      - ./container/remote-ultra:/opt/ra2/remote-ultra:ro
+      - ${LOGS_DIR:-/volume2/Data/App_Development/ra2-lan-party/logs}:/home/commander/ra2-logs-root:rw
 
   ra2-player-2:
     <<: *ra2-ultra
+    environment:
+      <<: *ra2-ultra-env
+      PLAYER_ID: "2"
+      PLAYER_SERIAL: ${PLAYER2_SERIAL:?set PLAYER2_SERIAL in .env}
+      ULTRA_GAME_DIAGNOSTIC_DIR: /home/commander/ra2-logs-root/player2
+      ULTRA_GAME_WORK_DIR: /home/commander/ra2-logs-root/player2/game-work
+    volumes:
+      - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2-win32}:/home/commander/.wine:rw
+      - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
+      - ${AOE2_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2}:/home/commander/aoe2_assets:ro
+      - ${SC_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft}:/home/commander/sc_assets:ro
+      - ${SC_DISC_HOST:-/volume2/Data/Games/1 Packed - Compressed/StarCraft & Brood War}:/home/commander/sc_disc:ro
+      - ${SC_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft/.disc-staging}:/home/commander/sc_staging:ro
+      - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
+      - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
+      - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+      - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
+      - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
+      - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
+      - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
+      - ./container/secure-game-select.sh:/opt/ra2/secure-game-select.sh:ro
+      - ./container/start-openbox-ultra.sh:/opt/ra2/start-openbox-ultra.sh:ro
+      - ./container/openbox:/opt/ra2/openbox:ro
+      - ./config/games.json:/opt/ra2/config/games.json:ro
+      - ./config/aoe2-ddraw.ini:/opt/ra2/config/aoe2-ddraw.ini:ro
+      - ./config/aoe2-language:/opt/ra2/config/aoe2-language:ro
+      - ./config/starcraft-ddraw.ini:/opt/ra2/config/starcraft-ddraw.ini:ro
+      - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
+      - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
+      - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
+      - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+      - ./container/switch-game-display.sh:/opt/ra2/switch-game-display.sh:ro
+      - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
+      - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
+      - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro
+      - ./container/start-stream-gateway.sh:/opt/ra2/start-stream-gateway.sh:ro
+      - ./container/log-video-diagnostics.sh:/opt/ra2/log-video-diagnostics.sh:ro
+      - ./container/winedbg-minidump.sh:/opt/ra2/winedbg-minidump.sh:ro
+      - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
+      - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro
+      - ./container/remote-ultra:/opt/ra2/remote-ultra:ro
+      - ${LOGS_DIR:-/volume2/Data/App_Development/ra2-lan-party/logs}:/home/commander/ra2-logs-root:rw
 
   # RAM-backed debug player (scripts/dev-ram-ultra.sh). Port 6091; tmpfs + /dev/shm binds.
   ra2-player-dev:
@@ -117,10 +216,23 @@ services:
       - ./container/entrypoint-ultra.sh:/opt/ra2/entrypoint.sh:ro
       - ./container/supervisord.ultra.conf:/opt/ra2/supervisord.conf:ro
       - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
+      - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
+      - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
+      - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
+      - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
+      - ./container/secure-game-select.sh:/opt/ra2/secure-game-select.sh:ro
+      - ./container/start-openbox-ultra.sh:/opt/ra2/start-openbox-ultra.sh:ro
+      - ./container/openbox:/opt/ra2/openbox:ro
+      - ./config/games.json:/opt/ra2/config/games.json:ro
+      - ./config/aoe2-ddraw.ini:/opt/ra2/config/aoe2-ddraw.ini:ro
+      - ./config/aoe2-language:/opt/ra2/config/aoe2-language:ro
+      - ./config/starcraft-ddraw.ini:/opt/ra2/config/starcraft-ddraw.ini:ro
       - ./container/cleanup-xvfb-display.sh:/opt/ra2/cleanup-xvfb-display.sh:ro
       - ./container/start-xvfb-ultra.sh:/opt/ra2/start-xvfb-ultra.sh:ro
       - ./container/configure-display-modes.sh:/opt/ra2/configure-display-modes.sh:ro
       - ./container/apply-ultra-display.sh:/opt/ra2/apply-ultra-display.sh:ro
+      - ./container/switch-game-display.sh:/opt/ra2/switch-game-display.sh:ro
       - ./container/sync-game-transport.sh:/opt/ra2/sync-game-transport.sh:ro
       - ./container/ensure-game-ini-links.sh:/opt/ra2/ensure-game-ini-links.sh:ro
       - ./container/sync-audio-transport.sh:/opt/ra2/sync-audio-transport.sh:ro

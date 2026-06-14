@@ -2,7 +2,7 @@
   "use strict";
 
   const SETTINGS_KEY = "ra2UltraTransportSettings";
-  const SETTINGS_VERSION = 32;
+  const SETTINGS_VERSION = 47;
   const OPUS_NATIVE_RATE = 48000;
   const AUDIO_START_LEAD_S = 0.05;
   const DEFAULT_SETTINGS = {
@@ -30,6 +30,18 @@
   const ctx = canvas.getContext("2d", { alpha: false });
   const overlay = document.getElementById("overlay");
   const overlayStatus = document.getElementById("overlayStatus");
+  const overlayConnectButton = document.getElementById("overlayConnectButton");
+  const overlayStep1 = document.getElementById("overlayStep1");
+  const overlayHint = document.getElementById("overlayHint");
+  const gamePicker = document.getElementById("gamePicker");
+  const gamePickerTitle = document.getElementById("gamePickerTitle");
+  const gameSessionStatus = document.getElementById("gameSessionStatus");
+  const gamePickerButtons = document.getElementById("gamePickerButtons");
+  const watchPanel = document.getElementById("watchPanel");
+  const watchStatus = document.getElementById("watchStatus");
+  const watchStreamButton = document.getElementById("watchStreamButton");
+  const switchGameButton = document.getElementById("switchGameButton");
+  const activeGameStatus = document.getElementById("activeGameStatus");
   const controlPanel = document.getElementById("controlPanel");
   const panelHeader = document.getElementById("panelHeader");
   const panelToggle = document.getElementById("panelToggle");
@@ -112,6 +124,8 @@
   let streamStalls = 0;
   let virtualMouseX = 0;
   let virtualMouseY = 0;
+  let virtualGameX = 0;
+  let virtualGameY = 0;
   let remoteSentGameX = 0;
   let remoteSentGameY = 0;
   let gameModeIntent = false;
@@ -120,6 +134,18 @@
   let lastGameModeToggleAt = 0;
   const STREAM_STALL_MS = 8000;
   const activeAudioSources = new Set();
+  let availableGames = [];
+  let gameLauncherEnabled = false;
+  let currentGameSession = null;
+  let clientRole = "pending";
+  let controllerActive = false;
+  let controllerStreaming = false;
+  let spectatorCount = 0;
+  let selectedGameId = null;
+  let pendingGameSelectResolve = null;
+  let pendingGameSelectReject = null;
+  let connectTimeoutTimer = null;
+  const CONNECT_TIMEOUT_MS = 10000;
 
   function loadSettings() {
     try {
@@ -210,6 +236,7 @@
   }
 
   async function applyTransportSettings() {
+    if (clientRole !== "controller") return;
     if (!ws || ws.readyState !== WebSocket.OPEN || applyingTransport || !appliedSettings) return;
     const settings = await browserCompatibleSettings(currentSettingsFromUi());
     const next = transportSettingsSnapshot(settings);
@@ -304,12 +331,323 @@
   }
 
   function setStatus(text) {
-    overlayStatus.textContent = text;
-    overlay.classList.remove("hidden");
+    if (overlayHint) {
+      overlayHint.textContent = text || "";
+      overlayHint.hidden = !text;
+    } else if (overlayConnectButton) {
+      overlayConnectButton.textContent = text;
+    } else if (overlayStatus) {
+      overlayStatus.textContent = text;
+    }
+    if (overlay) overlay.classList.remove("hidden");
+  }
+
+  function showOverlayStep1() {
+    if (overlay) overlay.classList.remove("picker-open");
+    if (overlayStep1) overlayStep1.hidden = false;
+    if (overlayConnectButton) overlayConnectButton.hidden = false;
+    if (overlayHint) {
+      overlayHint.textContent = "";
+      overlayHint.hidden = true;
+    }
+  }
+
+  function showOverlayStep2() {
+    if (overlay) overlay.classList.add("picker-open");
+    if (overlayStep1) overlayStep1.hidden = true;
+    if (overlayConnectButton) {
+      overlayConnectButton.hidden = true;
+      overlayConnectButton.disabled = false;
+    }
+    if (overlayHint) overlayHint.hidden = true;
+  }
+
+  function setConnectButtonBusy(busy) {
+    if (overlayConnectButton) overlayConnectButton.disabled = busy;
+  }
+
+  function clearConnectTimeout() {
+    if (connectTimeoutTimer) {
+      clearTimeout(connectTimeoutTimer);
+      connectTimeoutTimer = null;
+    }
+  }
+
+  function startConnectTimeout() {
+    clearConnectTimeout();
+    connectTimeoutTimer = setTimeout(() => {
+      connectTimeoutTimer = null;
+      if (connectionState !== "connecting") return;
+      const socket = ws;
+      if (socket) {
+        detachSocketHandlers(socket);
+        socket.close();
+      }
+      ws = null;
+      handleConnectFailure("Timed out waiting for game list");
+    }, CONNECT_TIMEOUT_MS);
   }
 
   function hideOverlay() {
-    overlay.classList.add("hidden");
+    if (overlay) overlay.classList.add("hidden");
+    gamePicker.classList.remove("visible");
+    watchPanel.classList.remove("visible");
+  }
+
+  function setSessionStatus(text) {
+    if (activeGameStatus) {
+      activeGameStatus.textContent = text;
+    }
+  }
+
+  function showClickToConnect() {
+    clearConnectTimeout();
+    connectionState = "idle";
+    gamePicker.classList.remove("visible");
+    watchPanel.classList.remove("visible");
+    showOverlayStep1();
+    setConnectButtonBusy(false);
+    if (overlayConnectButton) overlayConnectButton.textContent = "Click to choose a game";
+    setStatus("");
+    setSessionStatus("No game session reported.");
+  }
+
+  function applySessionPresence(msg) {
+    if (typeof msg.controllerActive === "boolean") controllerActive = msg.controllerActive;
+    if (typeof msg.controllerStreaming === "boolean") controllerStreaming = msg.controllerStreaming;
+    if (typeof msg.spectatorCount === "number") spectatorCount = msg.spectatorCount;
+    if (msg.role) clientRole = msg.role;
+    updateSpectatorUi();
+  }
+
+  function updateSpectatorUi() {
+    const spectator = clientRole === "spectator";
+    if (switchGameButton) {
+      switchGameButton.hidden = spectator;
+    }
+    if (activeGameStatus && spectator) {
+      activeGameStatus.textContent = controllerStreaming
+        ? `Watching live stream (${spectatorCount} viewer${spectatorCount === 1 ? "" : "s"})`
+        : "Waiting for the active player to start streaming…";
+    }
+    controlPanel.classList.toggle("spectator-mode", spectator);
+  }
+
+  function updateWatchPanel(session, presence) {
+    const gameTitle = session && session.title ? session.title : (session && session.id ? session.id : "a game");
+    const streaming = presence && presence.controllerStreaming;
+    if (watchStatus) {
+      if (streaming) {
+        watchStatus.textContent = `A player is running ${gameTitle}. You can watch video and audio, but not control the game.`;
+      } else {
+        watchStatus.textContent = `A player is connected and preparing ${gameTitle}. Watch now and the stream will begin when they connect.`;
+      }
+    }
+  }
+
+  function showWatchPanel(games, session, presence) {
+    gamePicker.classList.remove("visible");
+    updateWatchPanel(session || currentGameSession, presence || {
+      controllerActive,
+      controllerStreaming,
+      spectatorCount,
+    });
+    watchPanel.classList.add("visible");
+    showOverlayStep2();
+    clearConnectTimeout();
+    setConnectButtonBusy(false);
+    if (presence && presence.controllerStreaming) {
+      setStatus("Another player is in control — read below, then click Watch stream");
+    } else {
+      setStatus("Another player is in control — read below, then click Watch stream when ready");
+    }
+  }
+
+  function updateActiveGameStatus() {
+    if (!activeGameStatus) return;
+    if (currentGameSession && currentGameSession.phase === "running" && currentGameSession.id) {
+      activeGameStatus.textContent = `In session: ${currentGameSession.title || currentGameSession.id}`;
+    } else if (currentGameSession && currentGameSession.phase === "switching" && currentGameSession.id) {
+      activeGameStatus.textContent = `Switching to ${currentGameSession.title || currentGameSession.id}…`;
+    } else {
+      activeGameStatus.textContent = "Waiting at game menu.";
+    }
+  }
+
+  function showGamePicker(games, session) {
+    gamePickerButtons.textContent = "";
+    const activeId = session && session.phase === "running" ? session.id : null;
+    if (session && session.phase === "running" && session.id) {
+      gamePickerTitle.textContent = "Games";
+      gameSessionStatus.hidden = false;
+      gameSessionStatus.textContent = `Currently in session: ${session.title || session.id}`;
+    } else if (session && session.phase === "switching" && session.id) {
+      gamePickerTitle.textContent = "Games";
+      gameSessionStatus.hidden = false;
+      gameSessionStatus.textContent = `Switching to ${session.title || session.id}…`;
+    } else {
+      gamePickerTitle.textContent = "Choose a game";
+      gameSessionStatus.hidden = true;
+      gameSessionStatus.textContent = "";
+    }
+    for (const game of games) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "game-pick-btn";
+      if (activeId && game.id === activeId) {
+        btn.classList.add("active");
+      }
+      btn.textContent = game.title || game.id;
+      btn.dataset.gameId = game.id;
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void pickGame(game.id);
+      });
+      gamePickerButtons.appendChild(btn);
+    }
+    gamePicker.classList.add("visible");
+    showOverlayStep2();
+    clearConnectTimeout();
+    setConnectButtonBusy(false);
+    if (activeId) {
+      gamePickerTitle.textContent = `Select a game — ${session.title || session.id} is running`;
+    }
+    updateActiveGameStatus();
+  }
+
+  function openSwitchGameOverlay() {
+    if (!gameLauncherEnabled || !availableGames.length) return;
+    if (overlay) overlay.classList.remove("hidden");
+    showGamePicker(availableGames, currentGameSession);
+  }
+
+  function setGamePickerBusy(busy) {
+    for (const btn of gamePickerButtons.querySelectorAll(".game-pick-btn")) {
+      btn.disabled = busy;
+    }
+  }
+
+  function sendSelectGame(gameId) {
+    return new Promise((resolve, reject) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("not connected"));
+        return;
+      }
+      pendingGameSelectResolve = resolve;
+      pendingGameSelectReject = reject;
+      ws.send(JSON.stringify({ type: "selectGame", game: gameId }));
+    });
+  }
+
+  async function pickGame(gameId) {
+    if (!gameId) return;
+    const sameRunning =
+      currentGameSession &&
+      currentGameSession.phase === "running" &&
+      currentGameSession.id === gameId;
+    if (sameRunning && connectionState === "streaming") {
+      hideOverlay();
+      return;
+    }
+    const switchingStream = connectionState === "streaming" && !sameRunning;
+    setGamePickerBusy(true);
+    if (switchingStream) {
+      setStatus(`Switching to ${gameId}…`);
+      releasePressedKeys();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "stop" }));
+      }
+      resetVideoDecoder();
+      resetAudioPlayback();
+      connectionState = "connecting";
+    } else if (sameRunning) {
+      setStatus(`Connecting to ${currentGameSession.title || gameId}…`);
+    } else if (currentGameSession && currentGameSession.phase === "running" && currentGameSession.id) {
+      setStatus(`Switching from ${currentGameSession.title || currentGameSession.id} to ${gameId}…`);
+    } else {
+      setStatus(`Starting ${gameId}…`);
+    }
+    try {
+      const result = await sendSelectGame(gameId);
+      selectedGameId = result.game || gameId;
+      currentGameSession = result.currentGame || {
+        phase: "running",
+        id: selectedGameId,
+        title: gameId,
+      };
+      updateActiveGameStatus();
+      await startStreamAfterGameSelect();
+    } catch (error) {
+      selectedGameId = null;
+      setGamePickerBusy(false);
+      setStatus(error && error.message ? error.message : "Game selection failed");
+    }
+  }
+
+  async function ensureGameSelected(games, launcherEnabled, session, presence) {
+    if (!launcherEnabled || !games.length) {
+      selectedGameId = null;
+      return true;
+    }
+    currentGameSession = session || currentGameSession;
+    applySessionPresence(presence || {});
+    if (controllerActive && clientRole !== "controller") {
+      showWatchPanel(games, currentGameSession, presence);
+      return false;
+    }
+    watchPanel.classList.remove("visible");
+    showGamePicker(games, currentGameSession);
+    return false;
+  }
+
+  async function watchStream() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    clientRole = "spectator";
+    setStatus("Joining as spectator…");
+    unlockAudio();
+    ws.send(JSON.stringify({ type: "watch" }));
+  }
+
+  async function startStreamAfterGameSelect() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error("not connected");
+    }
+    clientRole = "controller";
+    const settings = loadSettings();
+    const startSettings = await browserCompatibleSettings(settings);
+    await ensureDecoders();
+    connectionState = "connected";
+    updateTransportStatus();
+    hideOverlay();
+    ws.send(JSON.stringify({
+      type: "start",
+      settings: startSettings,
+    }));
+    startPingTimer();
+  }
+
+  function handleSelectGameResult(msg) {
+    const resolve = pendingGameSelectResolve;
+    const reject = pendingGameSelectReject;
+    pendingGameSelectResolve = null;
+    pendingGameSelectReject = null;
+    applySessionPresence(msg);
+    if (msg.currentGame) {
+      currentGameSession = msg.currentGame;
+      updateActiveGameStatus();
+    }
+    if (msg.ok && msg.role) {
+      clientRole = msg.role;
+    }
+    if (!resolve) return;
+    if (msg.ok) {
+      resolve(msg);
+      return;
+    }
+    if (msg.error && String(msg.error).includes("Another player is in control")) {
+      showWatchPanel(availableGames, currentGameSession, msg);
+    }
+    reject(new Error(msg.error || "Game selection rejected"));
   }
 
   function wsUrl() {
@@ -467,39 +805,44 @@
     return null;
   }
 
+  async function resolveActiveVideoDecoderCodec(videoCodec, { recordFallbacks = false } = {}) {
+    const requestedVideo = String(videoCodec || "H264").toUpperCase();
+    const resolution = `${streamWidth}x${streamHeight}`;
+    const videoDecoderCodec = await supportedVideoDecoderCodec(requestedVideo, resolution);
+    if (videoDecoderCodec) {
+      activeVideoDecoderCodec = videoDecoderCodec;
+      return requestedVideo;
+    }
+    if (requestedVideo !== "H264") {
+      const fallbackOrder = requestedVideo === "H265_10" ? ["H265", "H264"] : ["H264"];
+      for (const fallback of fallbackOrder) {
+        const fallbackDecoderCodec = await supportedVideoDecoderCodec(fallback, resolution);
+        if (!fallbackDecoderCodec) continue;
+        activeVideoDecoderCodec = fallbackDecoderCodec;
+        if (recordFallbacks) {
+          browserFallbacks.push({
+            field: "videoCodec",
+            requested: requestedVideo,
+            active: fallback,
+            reason:
+              requestedVideo === "H265_10" && fallback === "H265"
+                ? "10-bit HEVC VideoDecoder unsupported in this browser"
+                : "HEVC VideoDecoder unsupported in this browser",
+          });
+        }
+        return fallback;
+      }
+    }
+    activeVideoDecoderCodec = VIDEO_DECODER_CODECS.H264[0];
+    return "H264";
+  }
+
   async function browserCompatibleSettings(settings) {
     browserFallbacks = [];
     const compatible = { ...settings };
-    const requestedVideo = String(compatible.videoCodec || "H264").toUpperCase();
-    const videoDecoderCodec = await supportedVideoDecoderCodec(
-      requestedVideo,
-      `${streamWidth}x${streamHeight}`
-    );
-    if (videoDecoderCodec) {
-      activeVideoDecoderCodec = videoDecoderCodec;
-    } else if (requestedVideo !== "H264") {
-      // 10-bit HEVC degrades to 8-bit HEVC before giving up and using H.264.
-      const fallbackOrder = requestedVideo === "H265_10" ? ["H265", "H264"] : ["H264"];
-      for (const fallback of fallbackOrder) {
-        const fallbackDecoderCodec = await supportedVideoDecoderCodec(
-          fallback,
-          `${streamWidth}x${streamHeight}`
-        );
-        if (!fallbackDecoderCodec) continue;
-        compatible.videoCodec = fallback;
-        activeVideoDecoderCodec = fallbackDecoderCodec;
-        browserFallbacks.push({
-          field: "videoCodec",
-          requested: requestedVideo,
-          active: fallback,
-          reason:
-            requestedVideo === "H265_10" && fallback === "H265"
-              ? "10-bit HEVC VideoDecoder unsupported in this browser"
-              : "HEVC VideoDecoder unsupported in this browser",
-        });
-        break;
-      }
-    }
+    compatible.videoCodec = await resolveActiveVideoDecoderCodec(compatible.videoCodec, {
+      recordFallbacks: true,
+    });
     if (compatible.audioEncoder === "opus") {
       const resolvedRate = await resolveOpusAudioQuality();
       if (!resolvedRate) {
@@ -523,10 +866,79 @@
     return compatible;
   }
 
+  async function applyStreamReady(msg) {
+    if (msg.width && msg.height) {
+      syncStreamDimensions(msg.width, msg.height);
+    }
+    if (msg.nativeWidth && msg.nativeHeight) {
+      nativeWidth = msg.nativeWidth;
+      nativeHeight = msg.nativeHeight;
+    }
+    if (msg.active) {
+      activeVideoCodec = msg.active.videoCodec || "H264";
+      activeAudioBitrate = Number(msg.active.audioBitrate || 64000);
+      activeAudioEncoder = msg.active.audioEncoder || activeAudioEncoder;
+      activeAudioRate = Number(msg.active.audioQuality || activeAudioRate);
+      moveInterval = 1000 / Number(msg.active.inputMoveHz || 60);
+      setStreamFps(msg.active.videoFps || streamFps);
+      activeVideoCodec = await resolveActiveVideoDecoderCodec(activeVideoCodec, {
+        recordFallbacks: true,
+      });
+      if (clientRole === "controller") {
+        syncUiFromActive(msg.active);
+        saveSettings(currentSettingsFromUi());
+        appliedSettings = transportSettingsSnapshot(currentSettingsFromUi());
+      }
+    }
+    resetVideoDecoder();
+    resetAudioPlayback();
+    await ensureDecoders();
+  }
+
   function setStreamFps(fps) {
     streamFps = Math.max(1, Number(fps) || 24);
     frameIntervalMs = 1000 / streamFps;
     nextPresentAt = 0;
+  }
+
+  function startPingTimer() {
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = null;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    pingTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const t0 = performance.now();
+      ws.send(JSON.stringify({ type: "ping", t: t0 }));
+    }, 5000);
+  }
+
+  function recoverVideoPresentation({ forcePresent = false } = {}) {
+    if (presentHandle !== null) {
+      if (typeof canvas.cancelVideoFrameCallback === "function") {
+        try {
+          canvas.cancelVideoFrameCallback(presentHandle);
+        } catch {
+          // Callback may already have fired or been cancelled by the browser.
+        }
+      } else {
+        cancelAnimationFrame(presentHandle);
+      }
+      presentHandle = null;
+    }
+    if (!pendingVideoFrame) return;
+    if (forcePresent) {
+      nextPresentAt = 0;
+      onPresentFrame(performance.now());
+      return;
+    }
+    scheduleVideoPresent();
+  }
+
+  function onDisplayLayoutChange() {
+    requestAnimationFrame(() => {
+      recoverVideoPresentation({ forcePresent: true });
+      updateCursorOverlay();
+    });
   }
 
   function scheduleVideoPresent() {
@@ -721,6 +1133,7 @@
   function decodeVideo(msg) {
     videoMessages += 1;
     lastVideoMessageAt = performance.now();
+    if (!videoDecoder) return;
     const data = b64ToU8(msg.data);
     videoBytes += data.length;
     if (!configured && msg.key) {
@@ -829,6 +1242,7 @@
   }
 
   function sendInput(event) {
+    if (clientRole !== "controller") return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (
       (event.type === "mousemove" || event.type === "mousedown" || event.type === "mouseup")
@@ -868,42 +1282,26 @@
       canvas.width = w;
       canvas.height = h;
     }
+    gameSurface.style.setProperty("--stream-ar-w", String(w));
+    gameSurface.style.setProperty("--stream-ar-h", String(h));
   }
 
   function canvasContentRect() {
-    const rect = canvas.getBoundingClientRect();
-    const sourceWidth = streamWidth || canvas.width || 1024;
-    const sourceHeight = streamHeight || canvas.height || 768;
-    const sourceAspect = sourceWidth / sourceHeight;
-    const rectAspect = rect.width / rect.height;
-    let width = rect.width;
-    let height = rect.height;
-    let left = rect.left;
-    let top = rect.top;
-
-    if (rectAspect > sourceAspect) {
-      width = rect.height * sourceAspect;
-      left = rect.left + (rect.width - width) / 2;
-    } else if (rectAspect < sourceAspect) {
-      height = rect.width / sourceAspect;
-      top = rect.top + (rect.height - height) / 2;
-    }
-
-    return { left, top, width, height };
+    return canvas.getBoundingClientRect();
   }
 
   function activeFullscreenElement() {
     return document.fullscreenElement || document.webkitFullscreenElement || null;
   }
 
-  function isGameModeFullscreen() {
-    const fs = activeFullscreenElement();
-    return fs === gameSurface || fs === canvas;
-  }
-
   function isPointerLocked() {
     return document.pointerLockElement === gameSurface
       || document.pointerLockElement === canvas;
+  }
+
+  function isGameModeFullscreen() {
+    const fs = activeFullscreenElement();
+    return fs === gameSurface || fs === canvas;
   }
 
   function isGameModeActive() {
@@ -957,10 +1355,16 @@
     updateTransportStatus([`game mode ${label}: ${message}`]);
   }
 
+  function streamGameSize() {
+    return {
+      w: streamWidth || canvas.width,
+      h: streamHeight || canvas.height,
+    };
+  }
+
   function gameCoordsFromClient(clientX, clientY) {
     const rect = canvasContentRect();
-    const w = streamWidth || canvas.width;
-    const h = streamHeight || canvas.height;
+    const { w, h } = streamGameSize();
     const x = Math.round(clamp((clientX - rect.left) / rect.width, 0, 1) * (w - 1));
     const y = Math.round(clamp((clientY - rect.top) / rect.height, 0, 1) * (h - 1));
     return { x, y };
@@ -972,16 +1376,48 @@
     virtualMouseY = clamp(clientY, rect.top, rect.top + rect.height - 0.001);
   }
 
+  function syncVirtualGameFromClient(clientX, clientY) {
+    const coords = gameCoordsFromClient(clientX, clientY);
+    virtualGameX = coords.x;
+    virtualGameY = coords.y;
+    syncVirtualMouseFromGame();
+  }
+
+  function syncVirtualMouseFromGame() {
+    const screen = gameCoordsToScreen(virtualGameX, virtualGameY);
+    virtualMouseX = screen.clientX;
+    virtualMouseY = screen.clientY;
+  }
+
   function centerVirtualMouse() {
     const rect = canvasContentRect();
     virtualMouseX = rect.left + rect.width / 2;
     virtualMouseY = rect.top + rect.height / 2;
+    syncVirtualGameFromClient(virtualMouseX, virtualMouseY);
+  }
+
+  function centerVirtualGame() {
+    const { w, h } = streamGameSize();
+    virtualGameX = (w - 1) / 2;
+    virtualGameY = (h - 1) / 2;
+    syncVirtualMouseFromGame();
   }
 
   function applyPointerDelta(event) {
-    const rect = canvasContentRect();
-    virtualMouseX = clamp(virtualMouseX + event.movementX, rect.left, rect.left + rect.width - 0.001);
-    virtualMouseY = clamp(virtualMouseY + event.movementY, rect.top, rect.top + rect.height - 0.001);
+    const { w, h } = streamGameSize();
+    // Pointer lock reports hardware deltas in CSS pixels. Map 1:1 into game space so
+    // sensitivity does not drop when the canvas scales up in fullscreen.
+    virtualGameX = clamp(virtualGameX + event.movementX, 0, w - 1);
+    virtualGameY = clamp(virtualGameY + event.movementY, 0, h - 1);
+    syncVirtualMouseFromGame();
+  }
+
+  function pointerMoveEvents(event) {
+    if (typeof event.getCoalescedEvents === "function") {
+      const coalesced = event.getCoalescedEvents();
+      if (coalesced.length > 0) return coalesced;
+    }
+    return [event];
   }
 
   function gameCoordsToScreen(gameX, gameY) {
@@ -1018,7 +1454,10 @@
 
   function mapMouse(e) {
     if (isPointerLocked()) {
-      return gameCoordsFromClient(virtualMouseX, virtualMouseY);
+      return {
+        x: Math.round(virtualGameX),
+        y: Math.round(virtualGameY),
+      };
     }
     return gameCoordsFromClient(e.clientX, e.clientY);
   }
@@ -1044,14 +1483,12 @@
     gameModeGraceUntil = performance.now() + 2500;
 
     gameSurface.focus({ preventScroll: true });
-    syncVirtualMouseFromClient(
-      virtualMouseX || window.innerWidth / 2,
-      virtualMouseY || window.innerHeight / 2
-    );
+    if (!virtualMouseX || !virtualMouseY) {
+      centerVirtualGame();
+    } else {
+      syncVirtualGameFromClient(virtualMouseX, virtualMouseY);
+    }
 
-    // Request fullscreen and pointer lock in the same user-gesture turn.
-    // Awaiting between the two calls expires user activation and makes lock fail,
-    // which previously triggered exitGameModeInternal() and kicked the user out.
     try {
       const fsPromise = requestGameModeFullscreen();
       if (fsPromise && typeof fsPromise.catch === "function") {
@@ -1100,6 +1537,7 @@
     } finally {
       gameModeBusy = false;
       updateGameModeUi();
+      onDisplayLayoutChange();
     }
   }
 
@@ -1117,11 +1555,10 @@
   function onPointerLockChange() {
     if (isPointerLocked()) {
       releasePressedKeys();
-      centerVirtualMouse();
-      const { x, y } = mapMouse({ clientX: virtualMouseX, clientY: virtualMouseY });
-      remoteSentGameX = x;
-      remoteSentGameY = y;
-      sendInput({ type: "mousemove", x, y });
+      centerVirtualGame();
+      remoteSentGameX = Math.round(virtualGameX);
+      remoteSentGameY = Math.round(virtualGameY);
+      sendInput({ type: "mousemove", x: remoteSentGameX, y: remoteSentGameY });
       completeGameModeEnter();
       return;
     }
@@ -1235,18 +1672,23 @@
   }
 
   function shouldHandlePointerEvent(event) {
-    if (isPointerLocked()) return true;
     const target = event.target;
     if (!(target instanceof Node)) return false;
+    if (overlay && overlay.contains(target)) return false;
+    if (controlPanel && controlPanel.contains(target)) return false;
+    if (isPointerLocked()) return true;
     return gameSurface.contains(target);
   }
 
   function handlePointerMove(e) {
     if (!shouldHandlePointerEvent(e)) return;
     if (isPointerLocked()) {
-      applyPointerDelta(e);
+      for (const ev of pointerMoveEvents(e)) {
+        applyPointerDelta(ev);
+      }
     } else {
       syncVirtualMouseFromClient(e.clientX, e.clientY);
+      syncVirtualGameFromClient(e.clientX, e.clientY);
     }
     updateCursorOverlay();
     const now = performance.now();
@@ -1259,6 +1701,16 @@
   function handlePointerDown(e) {
     if (!shouldHandlePointerEvent(e)) return;
     gameSurface.focus({ preventScroll: true });
+    if (gameModeIntent && !isPointerLocked()) {
+      try {
+        const lockPromise = requestGameModePointerLock();
+        if (lockPromise && typeof lockPromise.catch === "function") {
+          lockPromise.catch((error) => noteGameModeError("lock", error));
+        }
+      } catch (error) {
+        noteGameModeError("lock", error);
+      }
+    }
     if (!isPointerLocked() && e.pointerId !== undefined && canvas.setPointerCapture) {
       try {
         canvas.setPointerCapture(e.pointerId);
@@ -1358,49 +1810,58 @@
     }, 2000);
   }
 
-  async function connect() {
+  function detachSocketHandlers(socket) {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+  }
+
+  function beginConnectAttempt() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     connectionState = "connecting";
-    unlockAudio();
     pendingSettings = false;
     applyingTransport = false;
     appliedSettings = null;
+    selectedGameId = null;
+    clientRole = "pending";
+    pendingGameSelectResolve = null;
+    pendingGameSelectReject = null;
+    gamePicker.classList.remove("visible");
+    watchPanel.classList.remove("visible");
     if (applyTransportTimer) {
       clearTimeout(applyTransportTimer);
       applyTransportTimer = null;
     }
     pendingNotice.classList.remove("visible");
     updateTransportStatus();
-    setStatus("Connecting…");
-    await ensureDecoders();
-    if (ws) {
-      releasePressedKeys();
-      ws.close();
-      ws = null;
-    }
-    resetVideoDecoder();
-    resetAudioDecoder();
-    await ensureDecoders();
-    const settings = loadSettings();
-    applySettingsToUi(settings);
-    saveSettings(settings);
-    const startSettings = await browserCompatibleSettings(settings);
-    updateTransportStatus();
-    ws = new WebSocket(wsUrl());
-    ws.onopen = () => {
-      connectionState = "connected";
-      updateTransportStatus();
-      hideOverlay();
-      ws.send(JSON.stringify({
-        type: "start",
-        settings: startSettings,
-      }));
-      if (pingTimer) clearInterval(pingTimer);
-      pingTimer = setInterval(() => {
-        const t0 = performance.now();
-        ws.send(JSON.stringify({ type: "ping", t: t0 }));
-      }, 5000);
+    setStatus("Opening game selection…");
+    setSessionStatus("Connecting…");
+    setConnectButtonBusy(true);
+    startConnectTimeout();
+  }
+
+  function handleConnectFailure(message) {
+    clearConnectTimeout();
+    connectionState = "idle";
+    gamePicker.classList.remove("visible");
+    watchPanel.classList.remove("visible");
+    showOverlayStep1();
+    setConnectButtonBusy(false);
+    setSessionStatus("No game session reported.");
+    setStatus(`${message} — click to try again`);
+  }
+
+  function bindSocketHandlers(socket) {
+    socket.onopen = () => {
+      if (ws !== socket) return;
     };
-    ws.onmessage = (ev) => {
+    socket.onmessage = async (ev) => {
+      if (ws !== socket) return;
       let msg;
       try {
         msg = JSON.parse(ev.data);
@@ -1412,15 +1873,75 @@
         updateTransportStatus();
         return;
       }
-      if (msg.type === "hello") {
-        if (msg.defaults) {
-          applySettingsToUi({ ...DEFAULT_SETTINGS, ...loadSettings() });
+      if (msg.type === "selectGameResult") {
+        handleSelectGameResult(msg);
+        return;
+      }
+      if (msg.type === "controllerBusy") {
+        applySessionPresence(msg);
+        showWatchPanel(availableGames, currentGameSession, msg);
+        connectionState = "connecting";
+        return;
+      }
+      if (msg.type === "waitingForController") {
+        applySessionPresence(msg);
+        currentGameSession = msg.currentGame || currentGameSession;
+        updateActiveGameStatus();
+        setStatus("Waiting for the active player to start streaming…");
+        return;
+      }
+      if (msg.type === "controllerLeft") {
+        applySessionPresence(msg);
+        if (clientRole === "spectator") {
+          connectionState = "connecting";
+          resetVideoDecoder();
+          resetAudioPlayback();
+          showWatchPanel(availableGames, currentGameSession, msg);
+          setStatus("The active player disconnected. Waiting for a new session…");
         }
-        updateAvailability(msg.available);
-        updateTransportStatus();
+        return;
+      }
+      if (msg.type === "role") {
+        applySessionPresence(msg);
+        return;
+      }
+      if (msg.type === "hello") {
+        try {
+          if (msg.defaults) {
+            applySettingsToUi({ ...DEFAULT_SETTINGS, ...loadSettings() });
+          }
+          updateAvailability(msg.available);
+          availableGames = Array.isArray(msg.availableGames) ? msg.availableGames : [];
+          gameLauncherEnabled = Boolean(msg.gameLauncherEnabled);
+          currentGameSession = msg.currentGame || null;
+          applySessionPresence(msg);
+          updateActiveGameStatus();
+          updateTransportStatus();
+          if (connectionState !== "connecting") return;
+          const ready = await ensureGameSelected(
+            availableGames,
+            gameLauncherEnabled,
+            currentGameSession,
+            msg,
+          );
+          clearConnectTimeout();
+          if (ready) {
+            await startStreamAfterGameSelect();
+          } else {
+            setConnectButtonBusy(false);
+          }
+        } catch (error) {
+          clearConnectTimeout();
+          showClickToConnect();
+          const message = error && error.message ? error.message : "Game selection failed";
+          setStatus(`${message} — click to try again`);
+        }
         return;
       }
       if (msg.type === "ready") {
+        if (msg.role) clientRole = msg.role;
+        applySessionPresence(msg);
+        updateSpectatorUi();
         connectionState = "streaming";
         applyingTransport = false;
         pendingSettings = false;
@@ -1429,26 +1950,14 @@
         streamStatsStartedAt = performance.now();
         lastVideoFrameAt = 0;
         lastVideoMessageAt = 0;
-        if (msg.reason === "helper_restart" || msg.reason === "reconfigure") {
-          resetVideoDecoder();
-          resetAudioPlayback();
-          void ensureDecoders();
+        if (msg.reason === "watch" || msg.reason === "start") {
+          hideOverlay();
+        } else if (clientRole === "spectator") {
+          hideOverlay();
         }
-        if (msg.width && msg.height) {
-          syncStreamDimensions(msg.width, msg.height);
-        }
-        if (msg.nativeWidth && msg.nativeHeight) {
-          nativeWidth = msg.nativeWidth;
-          nativeHeight = msg.nativeHeight;
-        }
-        if (msg.active) {
-          activeVideoCodec = msg.active.videoCodec || "H264";
-          activeAudioBitrate = Number(msg.active.audioBitrate || 64000);
-          moveInterval = 1000 / Number(msg.active.inputMoveHz || 60);
-          setStreamFps(msg.active.videoFps || streamFps);
-          syncUiFromActive(msg.active);
-          saveSettings(currentSettingsFromUi());
-          appliedSettings = transportSettingsSnapshot(currentSettingsFromUi());
+        await applyStreamReady(msg);
+        if (clientRole === "spectator" || clientRole === "controller") {
+          startPingTimer();
         }
         activeTransport = msg.transport || null;
         serverFallbacks = msg.fallbacks || [];
@@ -1463,24 +1972,118 @@
       if (msg.type === "video") decodeVideo(msg);
       if (msg.type === "audio") decodeAudio(msg);
     };
-    ws.onclose = () => {
-      connectionState = "reconnecting";
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      clearConnectTimeout();
+      const resumeStream = connectionState === "streaming" || Boolean(selectedGameId);
       configured = false;
       resetAudioPlayback();
-      setStatus("Disconnected — reconnecting…");
-      scheduleReconnect();
+      pendingGameSelectResolve = null;
+      pendingGameSelectReject = null;
+      gamePicker.classList.remove("visible");
+      watchPanel.classList.remove("visible");
+      ws = null;
+      if (resumeStream) {
+        connectionState = "reconnecting";
+        setStatus("Disconnected — reconnecting…");
+        scheduleReconnect();
+        return;
+      }
+      showClickToConnect();
     };
-    ws.onerror = () => setStatus("Connection error");
+    socket.onerror = () => {
+      if (ws !== socket) return;
+      clearConnectTimeout();
+      setSessionStatus("Connection error");
+      setConnectButtonBusy(false);
+      if (connectionState === "connecting") {
+        setStatus("Connection error — click to try again");
+        connectionState = "idle";
+        showOverlayStep1();
+      }
+    };
   }
 
-  overlay.addEventListener("click", () => {
-    unlockAudio();
-    connect();
+  async function connect() {
+    if (connectionState === "connecting") return;
+    beginConnectAttempt();
+    try {
+      try {
+        unlockAudio();
+      } catch (error) {
+        console.error("audio unlock", error);
+      }
+
+      const previous = ws;
+      if (previous) {
+        releasePressedKeys();
+        detachSocketHandlers(previous);
+        previous.close();
+      }
+      ws = null;
+
+      resetVideoDecoder();
+      resetAudioDecoder();
+
+      const settings = loadSettings();
+      applySettingsToUi(settings);
+      saveSettings(settings);
+      updateTransportStatus();
+
+      const socket = new WebSocket(wsUrl());
+      ws = socket;
+      bindSocketHandlers(socket);
+    } catch (error) {
+      const message = error && error.message ? error.message : "Connection failed";
+      handleConnectFailure(message);
+    }
+  }
+
+  function requestConnectFromOverlay(event) {
+    if (event && event.target && event.target.closest(".game-pick-btn")) return;
+    if (event && event.target && event.target.closest("#watchStreamButton")) return;
+    if (connectionState === "connecting" || connectionState === "reconnecting") return;
+    if (watchPanel.classList.contains("visible") && connectionState === "streaming") {
+      hideOverlay();
+      return;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN && (gamePicker.classList.contains("visible") || watchPanel.classList.contains("visible"))) {
+      return;
+    }
+    try {
+      unlockAudio();
+    } catch (error) {
+      console.error("audio unlock", error);
+    }
+    void connect();
+  }
+
+  if (overlay) {
+    overlay.addEventListener("click", requestConnectFromOverlay);
+  }
+  overlayConnectButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    requestConnectFromOverlay(event);
   });
+  if (watchStreamButton) {
+    watchStreamButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void watchStream();
+    });
+  }
+  if (switchGameButton) {
+    switchGameButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openSwitchGameOverlay();
+    });
+  }
   bindInput();
   bindGameMode();
   bindSettingsUi();
+  window.addEventListener("resize", onDisplayLayoutChange);
+  syncStreamDimensions(streamWidth, streamHeight);
   applySettingsToUi(loadSettings());
+  showClickToConnect();
   updateTransportStatus();
   setInterval(updateTransportStatus, 1000);
   setInterval(checkStreamWatchdog, 2000);

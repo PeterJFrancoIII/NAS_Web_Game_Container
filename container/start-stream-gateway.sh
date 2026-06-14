@@ -28,12 +28,15 @@ case "$RA2_MEMORY_PROFILE" in
     ;;
 esac
 
-# The native stream size follows the Xvfb display (RESOLUTION) so changing the
-# display resolution propagates everywhere; explicit ULTRA_VIDEO_WIDTH/HEIGHT
-# overrides remain possible for letterboxed encodes.
-export RESOLUTION="${RESOLUTION:-960x720}"
-export ULTRA_VIDEO_WIDTH="${ULTRA_VIDEO_WIDTH:-${RESOLUTION%x*}}"
-export ULTRA_VIDEO_HEIGHT="${ULTRA_VIDEO_HEIGHT:-${RESOLUTION#*x}}"
+# Stream size follows display.env (updated per game via switch-game-display.sh).
+# Do not export ULTRA_VIDEO_WIDTH/HEIGHT here — the gateway reads display.env
+# on each sync so a game switch (e.g. StarCraft 640x480) is not pinned to boot size.
+DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
+if [ -f "$DISPLAY_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$DISPLAY_ENV"
+fi
+export RESOLUTION="${RESOLUTION:-1024x768}"
 
 export ULTRA_VIDEO_KEYFRAME_SECONDS="${ULTRA_VIDEO_KEYFRAME_SECONDS:-1}"
 export ULTRA_VIDEO_REQUIRE_HW="${ULTRA_VIDEO_REQUIRE_HW:-1}"
@@ -113,8 +116,8 @@ mkdir -p "$DIAGNOSTIC_DIR" 2>/dev/null || true
 
 printf '[ultra-gateway] codec=%s %sx%s@%sfps bitrate=%s require_hw=%s tls=%s logs=%s\n' \
   "$ULTRA_VIDEO_CODEC" \
-  "$ULTRA_VIDEO_WIDTH" \
-  "$ULTRA_VIDEO_HEIGHT" \
+  "${RESOLUTION%x*}" \
+  "${RESOLUTION#*x}" \
   "$ULTRA_VIDEO_FPS" \
   "$ULTRA_VIDEO_BITRATE" \
   "$ULTRA_VIDEO_REQUIRE_HW" \

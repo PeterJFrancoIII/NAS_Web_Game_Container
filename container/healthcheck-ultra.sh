@@ -17,13 +17,13 @@ fi
 
 pgrep -f "Xvfb :1" >/dev/null || exit 1
 pgrep -f "ra2-stream-gateway.py" >/dev/null || exit 1
+pgrep -f "start-game-ultra.sh" >/dev/null || pgrep -f "run-game-session.sh" >/dev/null || exit 1
 
-GAME_PROCESS="${ULTRA_GAME_PROCESS:-gamemd.exe}"
-if ps -eo stat=,comm= 2>/dev/null | awk -v name="$GAME_PROCESS" '$2 == name && $1 ~ /^Z/ { found=1 } END { exit found ? 0 : 1 }'; then
-  exit 1
-fi
-if ! ps -eo stat=,comm= 2>/dev/null | awk -v name="$GAME_PROCESS" '$2 == name && $1 !~ /^Z/ { found=1 } END { exit found ? 0 : 1 }'; then
-  exit 1
-fi
+# Reject zombie game processes from any supported title.
+for proc in gamemd.exe EMPIRES2.EXE; do
+  if ps -eo stat=,comm= 2>/dev/null | awk -v name="$proc" '$2 == name && $1 ~ /^Z/ { found=1 } END { exit found ? 0 : 1 }'; then
+    exit 1
+  fi
+done
 
 exit 0

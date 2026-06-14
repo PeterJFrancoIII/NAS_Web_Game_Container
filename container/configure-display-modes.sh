@@ -10,7 +10,7 @@ if [ -f "$DISPLAY_ENV" ]; then
   . "$DISPLAY_ENV"
 fi
 
-ACTIVE="${RESOLUTION:-960x720}"
+ACTIVE="${RESOLUTION:-1024x768}"
 
 log() {
   printf '[ultra-display] %s\n' "$*" >&2
@@ -40,6 +40,7 @@ modeline_for_mode() {
   case "$1" in
     640x480)   printf '%s\n' '23.75 640 656 720 864 480 483 487 525' ;;
     960x720)   printf '%s\n' '55.00 960 992 1088 1248 720 723 727 750' ;;
+    1024x768)  printf '%s\n' '65.00 1024 1048 1184 1344 768 771 777 806' ;;
     1440x1080) printf '%s\n' '129.00 1440 1528 1672 1904 1080 1083 1087 1120' ;;
     *) return 1 ;;
   esac
@@ -77,7 +78,7 @@ if [ -z "$output" ]; then
 fi
 
 # Keep in sync with GAME_DISPLAY_MODES in ra2-stream-gateway.py
-for mode in 640x480 960x720 1440x1080; do
+for mode in 640x480 960x720 1024x768 1440x1080; do
   add_mode "$mode" "$output" || true
 done
 

@@ -8,3 +8,5 @@ __pycache__/
 prefixes/
 assets/
 logs/
+config/aoe2-language/LANGUAGE.DLL
+config/aoe2-language/History/

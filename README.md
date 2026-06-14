@@ -2,9 +2,9 @@
 
 **Tag:** `golden-master-2026-06` · **Lock:** June 2026
 
-Two-player Red Alert 2 / Yuri's Revenge on Synology DS225+, streamed to Chromium over **one HTTPS port per player** via WebCodecs + WSS.
+Multi-game LAN party on Synology DS225+: **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War**, streamed to Chromium over **one HTTPS port per player** via WebCodecs + WSS.
 
-> **Read first:** [`docs/GOLDEN_MASTER.md`](docs/GOLDEN_MASTER.md) — full replication guide for LLM agents and developers (hardware, ports, transport, bugs, benchmarks, backup).
+> **Read first:** [`docs/GOLDEN_MASTER.md`](docs/GOLDEN_MASTER.md) — full replication guide for LLM agents and developers (hardware, ports, transport, multi-game launcher, bugs, benchmarks, backup).
 
 ## Play URLs
 
@@ -13,7 +13,14 @@ Two-player Red Alert 2 / Yuri's Revenge on Synology DS225+, streamed to Chromium
 | 1 | `https://192.168.0.193:6081/` | `https://peterjfrancoiii2.synology.me:6081/` |
 | 2 | `https://192.168.0.193:6082/` | `https://peterjfrancoiii2.synology.me:6082/` |
 
-Router: forward **TCP 6081 + 6082**. Hard-refresh after client updates.
+Router: forward **TCP 6081 + 6082**. Hard-refresh after client updates (`Cmd+Shift+R` / `Ctrl+Shift+R`).
+
+## Browser connect flow
+
+1. Open the play URL — overlay shows **Click to choose a game** (no auto-connect).
+2. Click → WebSocket connects → game picker lists RA2, AoE II, StarCraft.
+3. Pick a game → stream starts. Use **Transport → Switch game…** to change titles mid-session.
+4. If another player is already controlling, a **Watch stream** panel appears — spectator join is **manual** (click the button; no auto-join).
 
 ## Stack at a glance
 
@@ -23,8 +30,9 @@ Router: forward **TCP 6081 + 6082**. Hard-refresh after client updates.
 | **Image** | `ra2-lan-party:ultra` |
 | **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` |
 | **Flag** | `RA2_COMPOSE_ULTRA=1` |
-| **Client** | `container/remote-ultra/` · `SETTINGS_VERSION=32` |
-| **Tests** | `python3 -m pytest tests/ -q` (77 passed) |
+| **Games** | `config/games.json` · `GAME_LAUNCHER_ENABLED=1` |
+| **Client** | `container/remote-ultra/` · `SETTINGS_VERSION=47` · `ultra-play.js?v=47` |
+| **Tests** | `python3 -m pytest tests/ -q` (79 passed) |
 
 **Production:** **Ultra Arch Browser** streaming only. **Not production:** noVNC, WebRTC, Moonlight — [`docs/ARCHIVED_EXPERIMENTS.md`](docs/ARCHIVED_EXPERIMENTS.md).
 
@@ -35,10 +43,22 @@ Chromium  ←─ HTTPS/WSS :6081|:6082 ─→  ra2-stream-gateway.py
                                               ↓
                                     stream-helper (VA-API, cores 2–3)
                                               ↓
-                                    Xvfb + Wine/gamemd.exe (core 0 or 1)
+                                    Xvfb + Wine (core 0 or 1)
+                                              ↓
+                         game-launcher → run-game-session (RA2 / AoE2 / SC)
 ```
 
 Both players share identical config; **only serial keys and Wine prefixes differ**.
+
+## Supported games
+
+| ID | Title | Assets mount |
+|----|-------|--------------|
+| `ra2` | Red Alert 2 + Yuri's Revenge | `ASSETS_DIR` → `/home/commander/game_assets` |
+| `aoe2` | Age of Empires II (1999) | `AOE2_ASSETS_HOST` → `/home/commander/aoe2_assets` |
+| `starcraft` | StarCraft + Brood War | `SC_ASSETS_HOST` → `/home/commander/sc_assets` |
+
+Game profiles, executables, and display sizes live in `config/games.json`.
 
 ## Golden transport defaults
 
@@ -47,7 +67,7 @@ Both players share identical config; **only serial keys and Wine prefixes differ
 | Video | H.265 10-bit · 24 fps · 2.0 Mbps · GPU scale |
 | Audio | Opus 48 kHz · 64 kbps |
 | Input | 60 Hz mouse · full keys/buttons/wheel |
-| Display | 960×720 @ 24-bit |
+| Display | Per-game (960×720 stream; game-native sizes in manifest) |
 | Game mode | Fullscreen + pointer lock · dual lag cursors (white local / amber remote) |
 
 ## Replicate (minimal)
@@ -57,7 +77,7 @@ cd /volume2/Data/App_Development/ra2-lan-party/project
 cp .env.example .env          # PLAYER1/2_SERIAL, VNC_PASSWORD, ASSETS_DIR
 sh scripts/validate-env.sh
 sh scripts/prepare-nas.sh
-# Stage game files to assets-game2 separately (not in repo)
+# Stage game files separately (not in repo) — see assets-example/README.md
 RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ```
 
@@ -83,6 +103,7 @@ Game multiplayer UDP stays on Docker bridge `172.22.20.11` ↔ `172.22.20.12` (n
 | `scripts/backup-golden-master.sh` | Backup image + runtime (no game files) |
 | `scripts/validate-env.sh` | Pre-flight `.env` |
 | `scripts/sync-to-nas.sh` | Mac → NAS sync |
+| `scripts/unpack-starcraft-broodwar.sh` | Stage StarCraft disc assets on NAS |
 
 ## Backup
 
@@ -96,11 +117,12 @@ Creates `/volume2/.../ra2-lan-party/backups/golden-master-<timestamp>/` with Doc
 
 See full table in [`docs/GOLDEN_MASTER.md` §5](docs/GOLDEN_MASTER.md). Top items:
 
-- Map freeze → don't rewrite INI during stream start
+- Map freeze → don't rewrite INI during stream start (RA2 only)
+- Stale client JS → hard refresh; gateway strips `?v=` from static paths
 - Player 2 down → deploy both; forward 6082
 - Game mode → `#gameSurface` FS+lock; document-level mouse capture
 - Stuck L on Ctrl+Alt+L → shortcut not forwarded to game
-- Stale client → hard refresh
+- Spectator → must click **Watch stream** manually
 
 ## Benchmarks (J4125, measured)
 

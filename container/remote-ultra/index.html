@@ -11,7 +11,12 @@
       position: fixed;
       inset: 0;
       background: #000;
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      container-type: size;
+      --stream-ar-w: 4;
+      --stream-ar-h: 3;
       outline: none;
     }
     #gameSurface:fullscreen,
@@ -20,10 +25,44 @@
       height: 100%;
       background: #000;
     }
-    #canvas { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; cursor: crosshair; touch-action: none; }
-    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.85); z-index: 2; }
+    #canvas {
+      display: block;
+      aspect-ratio: var(--stream-ar-w, 4) / var(--stream-ar-h, 3);
+      width: min(100cqw, calc(100cqh * var(--stream-ar-w, 4) / var(--stream-ar-h, 3)));
+      height: min(100cqh, calc(100cqw * var(--stream-ar-h, 3) / var(--stream-ar-w, 4)));
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      background: #000;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.85); z-index: 20; cursor: pointer; }
     #overlay.hidden { display: none; }
-    #overlayBox { max-width: 640px; padding: 20px; border: 1px solid #3a5a7a; border-radius: 8px; background: #111; text-align: center; }
+    #overlayBox { max-width: 640px; padding: 20px; border: 1px solid #3a5a7a; border-radius: 8px; background: #111; text-align: center; cursor: default; }
+    #overlayConnectButton {
+      display: block;
+      width: 100%;
+      margin: 0 0 8px;
+      padding: 14px 16px;
+      background: #1a3a5a;
+      color: #e8f4ff;
+      border: 1px solid #5a8ab0;
+      border-radius: 6px;
+      font: 16px/1.3 system-ui, sans-serif;
+      cursor: pointer;
+    }
+    #overlayConnectButton:hover { background: #24384d; }
+    #overlayConnectButton:disabled { opacity: 0.6; cursor: wait; }
+    .overlay-hint {
+      margin: 10px 0 0;
+      font-size: 13px;
+      color: #a8c4dc;
+      line-height: 1.4;
+    }
+    #overlay.picker-open #overlayStep1 { display: none; }
+    #overlay.picker-open #gamePicker.visible,
+    #overlay.picker-open #watchPanel.visible { display: block; }
     #controlPanel {
       position: fixed;
       top: 12px;
@@ -110,6 +149,7 @@
     }
     html.game-mode-locked #canvas { cursor: none; }
     html.game-mode-locked #controlPanel { display: none; }
+    html.game-mode-fullscreen #controlPanel { display: none; }
     #cursorOverlay {
       position: fixed;
       inset: 0;
@@ -164,6 +204,81 @@
     #remoteCursor::after {
       background: rgba(255, 196, 72, 0.95);
     }
+    #gamePicker { margin-top: 16px; display: none; }
+    #gamePicker.visible { display: block; }
+    #gamePickerTitle {
+      margin: 0 0 12px;
+      font-size: 13px;
+      color: #a8c4dc;
+    }
+    .game-pick-btn {
+      display: block;
+      width: 100%;
+      margin: 8px 0;
+      padding: 12px 14px;
+      background: #1a2a3a;
+      color: #e8f4ff;
+      border: 1px solid #3a5a7a;
+      border-radius: 6px;
+      font: 14px/1.3 system-ui, sans-serif;
+      cursor: pointer;
+      text-align: left;
+    }
+    .game-pick-btn:hover { background: #24384d; border-color: #5a8ab0; }
+    .game-pick-btn:disabled { opacity: 0.5; cursor: wait; }
+    .game-pick-btn.active {
+      border-color: #6ab04c;
+      background: #1a3a2a;
+    }
+    .game-pick-btn.active::after {
+      content: " — in session";
+      color: #8fd46a;
+      font-size: 12px;
+    }
+    #gameSessionStatus {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: #8fd46a;
+    }
+    #switchGameButton {
+      width: 100%;
+      margin-top: 4px;
+      padding: 10px 12px;
+      background: #1a2a3a;
+      color: #e8f4ff;
+      border: 1px solid #3a5a7a;
+      border-radius: 6px;
+      font: 13px/1.3 system-ui, sans-serif;
+      cursor: pointer;
+      text-align: left;
+    }
+    #watchPanel { margin-top: 16px; display: none; }
+    #watchPanel.visible { display: block; }
+    #watchStreamButton {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 12px 14px;
+      background: #1a3a2a;
+      color: #e8f4ff;
+      border: 1px solid #6ab04c;
+      border-radius: 6px;
+      font: 14px/1.3 system-ui, sans-serif;
+      cursor: pointer;
+      text-align: left;
+    }
+    #watchStreamButton:hover { background: #245038; }
+    #watchStatus {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: #a8c4dc;
+      line-height: 1.4;
+    }
+    .spectator-banner {
+      color: #8fd46a;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
@@ -174,7 +289,21 @@
       <div id="localCursor" class="cursor-marker" title="Local aim (your mouse)"></div>
     </div>
   </div>
-  <div id="overlay"><div id="overlayBox"><div id="overlayStatus">Click to connect</div></div></div>
+  <div id="overlay"><div id="overlayBox">
+    <div id="overlayStep1">
+      <button id="overlayConnectButton" type="button">Click to choose a game</button>
+      <p id="overlayHint" class="overlay-hint" hidden></p>
+    </div>
+    <div id="gamePicker">
+      <div id="gamePickerTitle">Choose a game</div>
+      <div id="gameSessionStatus" hidden></div>
+      <div id="gamePickerButtons"></div>
+    </div>
+    <div id="watchPanel">
+      <div id="watchStatus"></div>
+      <button id="watchStreamButton" type="button">Watch stream</button>
+    </div>
+  </div></div>
   <div id="controlPanel" class="collapsed">
     <div id="panelHeader"><span>Transport</span><span id="panelToggle">▼</span></div>
     <div id="panelBody">
@@ -237,14 +366,19 @@
         </select>
       </div>
       <div class="field">
+        <label>Game</label>
+        <button id="switchGameButton" type="button">Switch game…</button>
+        <p id="activeGameStatus" class="field-hint">No game session reported.</p>
+      </div>
+      <div class="field">
         <label for="gameModeButton">Display</label>
         <button id="gameModeButton" type="button">Game mode (fullscreen + lock)</button>
-        <p class="field-hint">Locks the mouse inside the stream. White crosshair = your local aim; amber = where the game cursor is (may lag behind). Exit with the button, double-click, or Ctrl+Alt+L.</p>
+        <p class="field-hint">Locks the mouse inside the stream. White crosshair = your local aim; amber = where the game cursor is (may lag behind). Enter with the Transport button, double-click the stream, or Ctrl+Alt+L. Exit the same way or press Esc.</p>
       </div>
       <div id="pendingNotice">Applying settings…</div>
       <div id="transportStatus">status: loading</div>
     </div>
   </div>
-  <script src="ultra-play.js"></script>
+  <script src="ultra-play.js?v=47"></script>
 </body>
 </html>

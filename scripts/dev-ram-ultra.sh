@@ -317,8 +317,8 @@ case "$ACTION" in
     run_docker exec "$SERVICE" sh -lc '
       set -eu
       FPS="${ULTRA_VIDEO_FPS:-24}"
-      W="${ULTRA_VIDEO_WIDTH:-960}"
-      H="${ULTRA_VIDEO_HEIGHT:-720}"
+      W="${ULTRA_VIDEO_WIDTH:-1024}"
+      H="${ULTRA_VIDEO_HEIGHT:-768}"
       if [ -f /home/commander/.ra2/display.env ]; then
         . /home/commander/.ra2/display.env
         W="${RA2_DISPLAY_WIDTH:-$W}"
@@ -341,8 +341,8 @@ case "$ACTION" in
     run_docker exec "$SERVICE" sh -lc '
       set -eu
       FPS="${ULTRA_VIDEO_FPS:-24}"
-      W="${ULTRA_VIDEO_WIDTH:-960}"
-      H="${ULTRA_VIDEO_HEIGHT:-720}"
+      W="${ULTRA_VIDEO_WIDTH:-1024}"
+      H="${ULTRA_VIDEO_HEIGHT:-768}"
       if [ -f /home/commander/.ra2/display.env ]; then
         . /home/commander/.ra2/display.env
         W="${RA2_DISPLAY_WIDTH:-$W}"
@@ -364,7 +364,7 @@ case "$ACTION" in
     echo "[dev-ram] pulseaudio + stream-gateway restarted (audio=${ULTRA_AUDIO_RATE:-48000}Hz)"
     ;;
   display)
-    RES="${2:-960x720}"
+    RES="${2:-1024x768}"
     run_docker exec "$SERVICE" /bin/sh /opt/ra2/apply-ultra-display.sh "$RES"
     ;;
   shell)

@@ -2,6 +2,7 @@
 """Ultra-light browser gateway: HTTPS static app + WSS stream on one port."""
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from websockets.asyncio.server import serve
 
@@ -54,9 +56,18 @@ INPUT_TRACE = Path(os.environ.get("ULTRA_INPUT_TRACE", str(DIAGNOSTIC_DIR / "inp
 GATEWAY_LOG = Path(os.environ.get("ULTRA_GATEWAY_LOG", str(DIAGNOSTIC_DIR / "gateway.log")))
 DISPLAY = os.environ.get("DISPLAY", ":1")
 DISPLAY_ENV = Path(os.environ.get("ULTRA_DISPLAY_ENV", "/home/commander/.ra2/display.env"))
+DISPLAY_REVISION = Path(
+    os.environ.get("ULTRA_DISPLAY_REVISION", "/home/commander/.ra2/display-revision")
+)
 ENSURE_INI_LINKS = Path(os.environ.get("ULTRA_ENSURE_INI_LINKS", "/opt/ra2/ensure-game-ini-links.sh"))
-# Resolution is fixed at container boot (RESOLUTION / display.env) and game launch
-# (sync-game-transport.sh). The gateway never changes native or stream dimensions.
+GAMES_MANIFEST = Path(os.environ.get("GAMES_MANIFEST", "/opt/ra2/config/games.json"))
+VALIDATE_GAME_ID = Path(os.environ.get("VALIDATE_GAME_ID", "/opt/ra2/validate-game-id.sh"))
+SECURE_GAME_SELECT = Path(os.environ.get("SECURE_GAME_SELECT", "/opt/ra2/secure-game-select.sh"))
+SESSION_STATE_FILE = Path(
+    os.environ.get("GAME_SESSION_STATE", "/home/commander/.ra2/session-state")
+)
+GAME_LAUNCHER_ENABLED = os.environ.get("GAME_LAUNCHER_ENABLED", "0") == "1"
+# Native/stream dimensions follow display.env, updated per game via switch-game-display.sh.
 
 
 def _read_display_env() -> dict[str, str]:
@@ -79,33 +90,28 @@ def _default_resolution() -> str:
     saved = _read_display_env().get("RESOLUTION", "").lower()
     if saved and "x" in saved:
         return saved
-    return os.environ.get("RESOLUTION", "960x720").lower()
+    return os.environ.get("RESOLUTION", "1024x768").lower()
 
 
 def _display_dims() -> tuple[int, int]:
-    """Native game display size from display.env, then container env."""
+    """Native game display size from display.env (updated per game), then RESOLUTION env."""
     saved = _read_display_env()
-    res = saved.get("RESOLUTION") or os.environ.get("RESOLUTION", "960x720")
+    res = saved.get("RESOLUTION") or os.environ.get("RESOLUTION", "1024x768")
     res = str(res).lower()
     try:
         width, height = (int(part) for part in res.split("x", 1))
     except ValueError:
         width, height = 1024, 768
-    raw_w = os.environ.get("ULTRA_VIDEO_WIDTH", "").strip()
-    raw_h = os.environ.get("ULTRA_VIDEO_HEIGHT", "").strip()
-    if not raw_w and not raw_h:
-        return max(1, width), max(1, height)
-    try:
-        width = int(raw_w) if raw_w else width
-        height = int(raw_h) if raw_h else height
-    except ValueError:
-        pass
     return max(1, width), max(1, height)
 
 
 def refresh_display_dims() -> tuple[int, int]:
     global VIDEO_WIDTH, VIDEO_HEIGHT
     VIDEO_WIDTH, VIDEO_HEIGHT = _display_dims()
+    # Keep gateway process env aligned for helper spawn and diagnostics.
+    os.environ["RESOLUTION"] = f"{VIDEO_WIDTH}x{VIDEO_HEIGHT}"
+    os.environ["ULTRA_VIDEO_WIDTH"] = str(VIDEO_WIDTH)
+    os.environ["ULTRA_VIDEO_HEIGHT"] = str(VIDEO_HEIGHT)
     return VIDEO_WIDTH, VIDEO_HEIGHT
 
 
@@ -138,11 +144,124 @@ def _ensure_game_ini_links() -> None:
         print(f"[ultra-gateway] ini link ensure failed: {exc}", flush=True)
 
 
+def read_session_state() -> dict[str, str]:
+    if not SESSION_STATE_FILE.is_file():
+        return {"phase": "waiting", "game": ""}
+    result: dict[str, str] = {"phase": "waiting", "game": ""}
+    try:
+        for line in SESSION_STATE_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            result[key.strip()] = value.strip()
+    except Exception as exc:
+        print(f"[ultra-gateway] session state unreadable: {exc}", flush=True)
+    return result
+
+
+def _game_title(game_id: str) -> str:
+    if not game_id or not GAMES_MANIFEST.is_file():
+        return game_id
+    try:
+        manifest = json.loads(GAMES_MANIFEST.read_text(encoding="utf-8"))
+        profile = manifest.get(game_id, {})
+        if isinstance(profile, dict):
+            return str(profile.get("title", game_id))
+    except Exception:
+        pass
+    return game_id
+
+
+def get_current_game_session() -> dict[str, str | None]:
+    state = read_session_state()
+    phase = str(state.get("phase", "waiting") or "waiting")
+    game_id = str(state.get("game", "") or "")
+    if not game_id:
+        return {"phase": phase, "id": None, "title": None}
+    return {"phase": phase, "id": game_id, "title": _game_title(game_id)}
+
+
+async def wait_for_game_running(game_id: str, timeout: float = 120.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        session = get_current_game_session()
+        if session.get("id") == game_id and session.get("phase") == "running":
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+def get_available_games() -> list[dict[str, str]]:
+    if not GAMES_MANIFEST.is_file():
+        return []
+    try:
+        manifest = json.loads(GAMES_MANIFEST.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[ultra-gateway] games manifest unreadable: {exc}", flush=True)
+        return []
+    games: list[dict[str, str]] = []
+    for game_id, profile in manifest.items():
+        if not isinstance(profile, dict):
+            continue
+        assets = Path(str(profile.get("assetsPath", "")))
+        exe_name = str(profile.get("gameExe", ""))
+        if not exe_name:
+            continue
+        if (assets / exe_name).is_file():
+            games.append({"id": str(game_id), "title": str(profile.get("title", game_id))})
+    return games
+
+
+async def authorize_game_selection(game_id: str) -> tuple[bool, str]:
+    game_id = str(game_id or "").strip()
+    if not game_id:
+        return False, "missing game id"
+    if not VALIDATE_GAME_ID.is_file() or not SECURE_GAME_SELECT.is_file():
+        return False, "game selection unavailable"
+
+    current = get_current_game_session()
+    if current.get("phase") == "running" and current.get("id") == game_id:
+        return True, game_id
+
+    validate = await asyncio.create_subprocess_exec(
+        "/bin/sh",
+        str(VALIDATE_GAME_ID),
+        game_id,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await validate.wait()
+    if validate.returncode != 0:
+        return False, "invalid game id"
+
+    switching = current.get("phase") == "running" and current.get("id") not in {None, "", game_id}
+
+    select = await asyncio.create_subprocess_exec(
+        "/bin/sh",
+        str(SECURE_GAME_SELECT),
+        game_id,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await select.communicate()
+    if select.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "selection failed"
+        return False, detail
+
+    if not await wait_for_game_running(game_id, timeout=120.0):
+        if switching:
+            return False, "game switch timed out"
+        return False, "game start timed out"
+
+    return True, game_id
+
+
 VIDEO_WIDTH, VIDEO_HEIGHT = _display_dims()
 
-# 480p / 720p / 1080p tiers (4:3). Exposed to Wine via configure-display-modes.sh.
+# 480p / 768p (XGA) / 720p / 1080p tiers (4:3). Exposed to Wine via configure-display-modes.sh.
 RESOLUTION_TIERS: dict[str, tuple[int, int]] = {
     "480p": (640, 480),
+    "768p": (1024, 768),
     "720p": (960, 720),
     "1080p": (1440, 1080),
 }
@@ -180,7 +299,18 @@ H265_TEST_ENABLED = os.environ.get("ULTRA_H265_TEST_ENABLED", "0").lower() in {
     "yes",
 }
 ACTIVE_SESSION: Optional["StreamSession"] = None
+SPECTATOR_SESSIONS: set["StreamSession"] = set()
 ACTIVE_SESSION_LOCK = asyncio.Lock()
+
+
+def session_presence() -> dict[str, object]:
+    controller = ACTIVE_SESSION
+    streaming = bool(controller and controller.stream_started)
+    return {
+        "controllerActive": controller is not None,
+        "controllerStreaming": streaming,
+        "spectatorCount": len(SPECTATOR_SESSIONS),
+    }
 
 KEYSYM_MAP = {
     "ArrowUp": "Up",
@@ -269,9 +399,8 @@ def _snap_to_tier_dims(width: int, height: int) -> tuple[int, int]:
 
 
 def _is_allowed_game_resolution(width: int, height: int) -> bool:
-    # Only exact 480p/720p/1080p tiers. RA2 briefly reports values like
-    # 1024x768 during map load; treating those as real changes restarts Xvfb
-    # and freezes the game.
+    # Exact tier sizes plus boot RESOLUTION (default 1024x768). Ignore transient
+    # in-game sizes during map load so we do not restart Xvfb mid-session.
     return (width, height) in GAME_DISPLAY_MODES
 
 
@@ -297,7 +426,7 @@ def _sync_audio_transport(active: dict) -> None:
 
 
 def _configured_display_dims() -> tuple[int, int]:
-    """Boot-time display size from display.env / RESOLUTION only (never live X11 or INI)."""
+    """Current display size from display.env / RESOLUTION (never live X11 or INI)."""
     width, height = refresh_display_dims()
     if _is_allowed_game_resolution(width, height):
         return width, height
@@ -697,7 +826,7 @@ def _mime(path: Path) -> str:
 
 
 def _static_body(path: str) -> Optional[tuple[str, bytes]]:
-    rel = path.lstrip("/") or "index.html"
+    rel = urlparse(path).path.lstrip("/") or "index.html"
     if rel == "stream":
         return None
     target = WEB_ROOT / rel
@@ -919,6 +1048,116 @@ class StreamSession:
         self.known_display_dims = (display_w, display_h)
         self.replaced = False
         self.stream_started = False
+        self.role = "pending"
+
+    def _mirror_controller_state(self, controller: "StreamSession") -> None:
+        self.active_settings = dict(controller.active_settings)
+        self.requested_settings = dict(controller.requested_settings)
+        self.fallbacks = list(controller.fallbacks)
+        self.native_width = controller.native_width
+        self.native_height = controller.native_height
+        self.stream_width = controller.stream_width
+        self.stream_height = controller.stream_height
+        self.known_display_dims = controller.known_display_dims
+        self.helper_env = dict(controller.helper_env)
+
+    async def _broadcast_stream_payload(self, line: str) -> None:
+        if line.startswith('{"type":"video"'):
+            self.frames_sent += 1
+        recipients = [self]
+        async with ACTIVE_SESSION_LOCK:
+            recipients.extend(list(SPECTATOR_SESSIONS))
+        stale: list[StreamSession] = []
+        for session in recipients:
+            if session is self:
+                target = session
+            else:
+                target = session
+            try:
+                await target.websocket.send(line)
+            except Exception:
+                stale.append(session)
+        if stale:
+            async with ACTIVE_SESSION_LOCK:
+                for session in stale:
+                    SPECTATOR_SESSIONS.discard(session)
+
+    async def _sync_spectators_ready(self, *, reason: str) -> None:
+        async with ACTIVE_SESSION_LOCK:
+            spectators = list(SPECTATOR_SESSIONS)
+        for session in spectators:
+            session._mirror_controller_state(self)
+            session.stream_started = True
+            try:
+                await session._send_ready(reason=reason)
+            except Exception:
+                async with ACTIVE_SESSION_LOCK:
+                    SPECTATOR_SESSIONS.discard(session)
+
+    async def _notify_spectators_controller_left(self) -> None:
+        payload = json.dumps(
+            {
+                "type": "controllerLeft",
+                **session_presence(),
+            }
+        )
+        async with ACTIVE_SESSION_LOCK:
+            spectators = list(SPECTATOR_SESSIONS)
+        stale: list[StreamSession] = []
+        for session in spectators:
+            session.stream_started = False
+            try:
+                await session.websocket.send(payload)
+            except Exception:
+                stale.append(session)
+        if stale:
+            async with ACTIVE_SESSION_LOCK:
+                for session in stale:
+                    SPECTATOR_SESSIONS.discard(session)
+
+    async def try_claim_controller(self) -> bool:
+        global ACTIVE_SESSION
+        async with ACTIVE_SESSION_LOCK:
+            if ACTIVE_SESSION and ACTIVE_SESSION is not self:
+                return False
+            ACTIVE_SESSION = self
+            self.role = "controller"
+            return True
+
+    async def attach_as_spectator(self) -> None:
+        global ACTIVE_SESSION
+        async with ACTIVE_SESSION_LOCK:
+            if ACTIVE_SESSION is self:
+                self.role = "controller"
+            else:
+                self.role = "spectator"
+                SPECTATOR_SESSIONS.add(self)
+            controller = ACTIVE_SESSION
+        if controller and controller.stream_started:
+            self._mirror_controller_state(controller)
+            self.stream_started = True
+            await self._send_ready(reason="watch")
+            return
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "waitingForController",
+                    **session_presence(),
+                    "currentGame": get_current_game_session() if GAME_LAUNCHER_ENABLED else None,
+                }
+            )
+        )
+
+    async def _send_role(self) -> None:
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "role",
+                    "role": self.role,
+                    **session_presence(),
+                }
+            )
+        )
 
     async def _send_ready(self, *, reason: str = "start") -> None:
         await self.websocket.send(
@@ -926,6 +1165,7 @@ class StreamSession:
                 {
                     "type": "ready",
                     "reason": reason,
+                    "role": self.role,
                     "width": self.stream_width,
                     "height": self.stream_height,
                     "nativeWidth": self.native_width,
@@ -936,6 +1176,7 @@ class StreamSession:
                     "active": self.active_settings,
                     "available": get_available_options(),
                     "fallbacks": self.fallbacks,
+                    **session_presence(),
                     "transport": {
                         "video": (
                             f"{self.active_settings['videoCodec']} "
@@ -993,31 +1234,39 @@ class StreamSession:
         self.fallbacks = validated["fallbacks"]
 
         if become_active:
-            await self.become_active()
+            if not await self.try_claim_controller():
+                await self.websocket.send(
+                    json.dumps(
+                        {
+                            "type": "controllerBusy",
+                            **session_presence(),
+                        }
+                    )
+                )
+                return
         should_restart = restart_helper
         await self._sync_stream_state(restart_helper=should_restart)
         self.stream_started = True
-        await self._send_ready(reason="reconfigure" if not become_active else "start")
+        reason = "reconfigure" if not become_active else "start"
+        await self._send_ready(reason=reason)
+        if self.role == "controller":
+            await self._sync_spectators_ready(reason=reason)
 
     async def become_active(self) -> None:
-        global ACTIVE_SESSION
-        async with ACTIVE_SESSION_LOCK:
-            previous = ACTIVE_SESSION
-            if previous and previous is not self:
-                previous.replaced = True
-                print(
-                    f"[ultra-gateway] replacing previous stream session (player {PLAYER_ID})",
-                    flush=True,
-                )
-                await previous.stop_helper("replaced_by_new_session")
-                await previous.websocket.close(1012, "replaced by a newer stream session")
-            ACTIVE_SESSION = self
+        await self.try_claim_controller()
 
     async def clear_active(self) -> None:
         global ACTIVE_SESSION
         async with ACTIVE_SESSION_LOCK:
             if ACTIVE_SESSION is self:
                 ACTIVE_SESSION = None
+            SPECTATOR_SESSIONS.discard(self)
+
+    async def cleanup_disconnect(self) -> None:
+        if self.role == "controller":
+            await self._notify_spectators_controller_left()
+            await self.stop_helper("disconnect")
+        await self.clear_active()
 
     async def start_helper(self) -> None:
         _ensure_game_ini_links()
@@ -1100,8 +1349,8 @@ class StreamSession:
                 print(f"[ultra-gateway] bad helper line: {line[:120]}", flush=True)
                 continue
             if line.startswith('{"type":"video"'):
-                self.frames_sent += 1
-            await self.websocket.send(line)
+                pass
+            await self._broadcast_stream_payload(line)
         if self.replaced:
             await self.stop_helper("helper_eof")
             return
@@ -1123,6 +1372,8 @@ class StreamSession:
         try:
             await self.start_helper()
             await self._send_ready(reason="helper_restart")
+            if self.role == "controller":
+                await self._sync_spectators_ready(reason="helper_restart")
         except Exception as exc:
             print(
                 f"[ultra-gateway] stream helper restart failed: {exc}",
@@ -1145,7 +1396,75 @@ class StreamSession:
                 )
             )
             return
+        if msg.get("type") == "selectGame":
+            game_id = str(msg.get("game", "")).strip()
+            async with ACTIVE_SESSION_LOCK:
+                controller = ACTIVE_SESSION
+            if controller and controller is not self:
+                await self.websocket.send(
+                    json.dumps(
+                        {
+                            "type": "selectGameResult",
+                            "ok": False,
+                            "game": None,
+                            "error": "Another player is in control. Use Watch stream to view.",
+                            "currentGame": get_current_game_session(),
+                            **session_presence(),
+                        }
+                    )
+                )
+                return
+            if not await self.try_claim_controller():
+                await self.websocket.send(
+                    json.dumps(
+                        {
+                            "type": "selectGameResult",
+                            "ok": False,
+                            "game": None,
+                            "error": "Another player is in control. Use Watch stream to view.",
+                            "currentGame": get_current_game_session(),
+                            **session_presence(),
+                        }
+                    )
+                )
+                return
+            prior = get_current_game_session()
+            ok, detail = await authorize_game_selection(game_id)
+            current = get_current_game_session()
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "selectGameResult",
+                        "ok": ok,
+                        "game": detail if ok else None,
+                        "error": None if ok else detail,
+                        "currentGame": current,
+                        "role": self.role,
+                        **session_presence(),
+                        "switched": ok
+                        and prior.get("phase") == "running"
+                        and prior.get("id") not in {None, "", detail},
+                    }
+                )
+            )
+            if ok:
+                print(
+                    f"[ultra-gateway] game selected: {detail} (player {PLAYER_ID}, controller)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[ultra-gateway] game selection rejected: {detail} (player {PLAYER_ID})",
+                    flush=True,
+                )
+            return
+        if msg.get("type") == "watch":
+            await self.attach_as_spectator()
+            await self._send_role()
+            return
         if msg.get("type") == "start":
+            if self.role == "spectator":
+                return
             await self._apply_transport_settings(
                 msg,
                 restart_helper=True,
@@ -1153,7 +1472,7 @@ class StreamSession:
             )
             return
         if msg.get("type") == "reconfigure":
-            if not self.stream_started:
+            if self.role != "controller" or not self.stream_started:
                 return
             await self._apply_transport_settings(
                 msg,
@@ -1162,6 +1481,8 @@ class StreamSession:
             )
             return
         if msg.get("type") == "stop":
+            if self.role != "controller":
+                return
             self.input.release_all_keys()
             await self.stop_helper("client_stop")
             return
@@ -1175,6 +1496,8 @@ class StreamSession:
             "keyup_all",
             "wheel",
         }:
+            if self.role != "controller":
+                return
             self.input.handle(msg)
 
 
@@ -1206,21 +1529,54 @@ async def stream_handler(websocket) -> None:
                     "fps": int(os.environ.get("ULTRA_VIDEO_FPS", "24")),
                     "defaults": default_settings(),
                     "available": get_available_options(),
+                    "gameLauncherEnabled": GAME_LAUNCHER_ENABLED,
+                    "availableGames": get_available_games() if GAME_LAUNCHER_ENABLED else [],
+                    "currentGame": get_current_game_session() if GAME_LAUNCHER_ENABLED else None,
+                    **session_presence(),
                 }
             )
         )
         async for raw in websocket:
             await session.handle_client_message(raw)
     finally:
-        session.input.release_all_keys()
-        await session.stop_helper("disconnect")
-        await session.clear_active()
+        if session.role == "controller":
+            session.input.release_all_keys()
+        await session.cleanup_disconnect()
         elapsed = time.monotonic() - session.connected_at
         print(
             f"[ultra-gateway] client disconnected frames={session.frames_sent} "
             f"elapsed={elapsed:.1f}s (player {PLAYER_ID})",
             flush=True,
         )
+
+
+async def watch_display_revision() -> None:
+    last_stamp = ""
+    while True:
+        await asyncio.sleep(0.5)
+        try:
+            stamp = DISPLAY_REVISION.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if not stamp or stamp == last_stamp:
+            continue
+        last_stamp = stamp
+        async with ACTIVE_SESSION_LOCK:
+            controller = ACTIVE_SESSION
+        if not controller or not controller.stream_started:
+            continue
+        print(
+            f"[ultra-gateway] display revision {stamp}; reconfiguring stream "
+            f"(player {PLAYER_ID})",
+            flush=True,
+        )
+        try:
+            refresh_display_dims()
+            await controller._sync_stream_state(restart_helper=True)
+            await controller._send_ready(reason="display_change")
+            await controller._sync_spectators_ready(reason="display_change")
+        except Exception as exc:
+            print(f"[ultra-gateway] display refresh failed: {exc}", flush=True)
 
 
 async def main() -> None:
@@ -1246,7 +1602,13 @@ async def main() -> None:
         ping_interval=20,
         ping_timeout=60,
     ):
-        await asyncio.Future()
+        watcher = asyncio.create_task(watch_display_revision())
+        try:
+            await asyncio.Future()
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
 
 
 if __name__ == "__main__":

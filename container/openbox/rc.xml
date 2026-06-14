@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Locked-down window manager: no menus, no terminal launch, no desktop shortcuts. -->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <resistance>
+    <strength>10</strength>
+    <screen_edge_strength>20</screen_edge_strength>
+  </resistance>
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>0</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+  <placement>
+    <policy>Smart</policy>
+    <center>yes</center>
+  </placement>
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout></titleLayout>
+    <keepBorder>no</keepBorder>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names><name>Game</name></names>
+    <popupTime>0</popupTime>
+  </desktops>
+  <keyboard>
+    <chainQuitKey>C-g</chainQuitKey>
+  </keyboard>
+  <mouse>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press"><action name="Focus"/></mousebind>
+      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
+    </context>
+    <context name="Client"/>
+    <context name="Desktop"/>
+    <context name="Root"/>
+  </mouse>
+  <applications>
+    <application type="normal">
+      <decor>no</decor>
+      <maximized>yes</maximized>
+    </application>
+  </applications>
+</openbox_config>

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-HOST="${NAS_HOST:-MediaServer2}"
+HOST="${NAS_HOST:-MediaServer2Local}"
 TARGET="${NAS_TARGET:-/volume2/Data/App_Development/ra2-lan-party/project}"
 SOURCE="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 

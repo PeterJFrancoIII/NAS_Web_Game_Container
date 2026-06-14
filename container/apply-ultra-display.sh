@@ -10,7 +10,7 @@ if [ -z "$RESOLUTION" ] || ! printf '%s' "$RESOLUTION" | grep -Eq '^[0-9]+x[0-9]
 fi
 
 DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
-DEPTH="${RA2_DISPLAY_DEPTH:-24}"
+DEPTH="${RA2_DISPLAY_DEPTH:-16}"
 GAME_PROCESS="${ULTRA_GAME_PROCESS:-gamemd.exe}"
 READY_TIMEOUT="${ULTRA_GAME_READY_TIMEOUT:-120}"
 DISPLAY_TARGET="${DISPLAY:-:1}"

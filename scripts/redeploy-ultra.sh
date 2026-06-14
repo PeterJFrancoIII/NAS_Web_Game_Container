@@ -2,7 +2,7 @@
 # Ultra-light Arch browser streaming profile (single-port WSS/WebCodecs).
 set -eu
 
-HOST="${NAS_HOST:-MediaServer2}"
+HOST="${NAS_HOST:-MediaServer2Local}"
 TARGET="${NAS_TARGET:-/volume2/Data/App_Development/ra2-lan-party/project}"
 SERVICES="${RA2_ULTRA_SERVICE:-ra2-player-1 ra2-player-2}"
 NAS_LAN_IP="${NAS_LAN_IP:-192.168.0.193}"

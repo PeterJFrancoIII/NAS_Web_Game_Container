@@ -4,7 +4,9 @@
 **Repo:** `synology-ra2-arch/` (GitHub: `NAS_Web_Game_Container`)  
 **NAS path:** `/volume2/Data/App_Development/ra2-lan-party/project`
 
-This is the **single authoritative document** for reproducing, operating, and restoring the production Red Alert 2 / Yuri's Revenge ultra browser streaming stack. Written for **low-context LLM agents** and developers with limited prior exposure to the project.
+This is the **single authoritative document** for reproducing, operating, and restoring the production ultra browser streaming stack. Supports **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War** from one container image per player.
+
+Written for **low-context LLM agents** and developers with limited prior exposure to the project.
 
 **Production URLs:**
 
@@ -35,17 +37,17 @@ This is the **single authoritative document** for reproducing, operating, and re
 - Docker / Container Manager with `/dev/dri` passthrough
 - `RENDER_GID=937`, `VIDEO_GID=44` for VA-API render node
 - Router forwards **TCP 6081 + 6082** to NAS for remote play
-- Client: **Chromium, Chrome, or Edge** (WebCodecs + WSS required)
+- Client: **Chromium, Chrome, or Edge** (WebCodecs + WSS required; HTTPS mandatory)
 
 ### 1.3 CPU layout (do not change)
 
 | Core | Assignment |
 |------|------------|
-| 0 | `gamemd.exe` player 1 (`PLAYER_ID=1`) |
-| 1 | `gamemd.exe` player 2 (`PLAYER_ID=2`) |
+| 0 | Game process player 1 (`PLAYER_ID=1`) |
+| 1 | Game process player 2 (`PLAYER_ID=2`) |
 | 2–3 | `stream-helper` + gateway + Xvfb + Pulse (`ULTRA_STREAM_CPUSET=2,3`) |
 
-Watchdog in `start-game-ultra.sh` re-applies `taskset` — Wine children escape the initial pin.
+Watchdog in `run-game-session.sh` re-applies `taskset` — Wine children escape the initial pin.
 
 ---
 
@@ -61,24 +63,35 @@ Watchdog in `start-game-ultra.sh` re-applies `taskset` — Wine children escape 
 | **Containers** | `ra2-player-1`, `ra2-player-2` |
 | **Base OS** | Arch Linux (inside container) |
 | **Wine** | Kron4ek 10.8, `amd64` package, **`win32` prefix**, multilib |
-| **Game** | `RA2MD.exe` → `gamemd.exe` |
-| **Assets mount** | `ASSETS_DIR=.../assets-game2` (read-only) |
-| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=32`** |
+| **Game launcher** | `GAME_LAUNCHER_ENABLED=1` (default) |
+| **Game manifest** | `config/games.json` |
+| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=47`** |
 
-### 2.2 Per-container processes
+### 2.2 Supported games (`config/games.json`)
+
+| ID | Title | Executable | Supervised process | Assets mount |
+|----|-------|------------|-------------------|--------------|
+| `ra2` | Red Alert 2 + Yuri's Revenge | `RA2MD.exe` | `gamemd.exe` | `ASSETS_DIR` → `game_assets` |
+| `aoe2` | Age of Empires II (1999) | `EMPIRES2.EXE` | `EMPIRES2.EXE` | `AOE2_ASSETS_HOST` → `aoe2_assets` |
+| `starcraft` | StarCraft + Brood War | `StarCraft.exe` | `StarCraft.exe` | `SC_ASSETS_HOST` → `sc_assets` |
+
+RA2 uses transport INI sync (`sync-game-transport.sh`); AoE2 and StarCraft use per-game `ddraw.ini` overlays and writable work dirs.
+
+### 2.3 Per-container processes
 
 | Process | Role |
 |---------|------|
 | PulseAudio | `game` null sink @ 48 kHz; TCP capture port 4711 |
-| Xvfb | Headless display 960×720 @ 24-bit; RandR tiers 480p/720p/1080p |
+| Xvfb | Headless display; RandR tiers 480p/720p/1080p |
 | Openbox | Minimal WM |
-| Wine + RA2 | Game on `:1` |
+| `start-game-ultra.sh` | Launcher supervisor loop |
+| `run-game-session.sh` | Launches selected game via Wine |
 | `ra2-stream-gateway.py` | HTTPS + WSS on container port 6080 |
 | `stream-helper` | GStreamer VA-API H.264/HEVC + Opus |
 
 **Not in hot path:** noVNC, x11vnc, websockify, WebRTC, Moonlight, Selkies.
 
-### 2.3 Matched two-player deployment
+### 2.4 Matched two-player deployment
 
 Both players share **identical** config via `x-ra2-player-env` and `x-ra2-ultra-env`. **Only these differ:**
 
@@ -90,15 +103,26 @@ Both players share **identical** config via `x-ra2-player-env` and `x-ra2-ultra-
 | Bridge IP | 172.22.20.11 | 172.22.20.12 |
 | CPU core | 0 | 1 |
 
-Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, `ASSETS_DIR`, image, volumes.
+Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, image, game asset mounts.
 
-### 2.4 Transport defaults (locked)
+### 2.5 Browser connect flow (locked UX)
+
+1. Page loads with overlay **Click to choose a game** — **no auto-connect**.
+2. User click → WebSocket opens → server sends `hello` with available games.
+3. Overlay step 2: game picker (RA2, AoE II, StarCraft).
+4. User selects game → client sends `selectGame` → stream starts on `ready`.
+5. **Transport → Switch game…** sends a new `selectGame` while connected.
+6. If controller slot is taken, client shows **Watch stream** panel — user must **click manually** (no auto-join to spectator mode).
+
+Client cache bust: `index.html` loads `ultra-play.js?v=47`. Gateway serves static files using `urlparse(path).path` so query strings do not break JS delivery.
+
+### 2.6 Transport defaults (locked)
 
 **Server (`.env` / compose):**
 
 | Setting | Value |
 |---------|-------|
-| `RESOLUTION` | `960x720` |
+| `RESOLUTION` | `960x720` (stream; per-game native sizes in manifest) |
 | `RA2_DISPLAY_DEPTH` | `24` |
 | `ULTRA_VIDEO_CODEC` | `H265_10` |
 | `ULTRA_VIDEO_FPS` | `24` |
@@ -112,6 +136,7 @@ Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, `ASSETS_DIR`, image
 | `ULTRA_AUDIO_BITRATE` | `64000` |
 | `ULTRA_AUDIO_RATE` | `48000` |
 | `ULTRA_INPUT_MOVE_HZ` | `60` |
+| `GAME_LAUNCHER_ENABLED` | `1` |
 | `LIBVA_DRIVER_NAME` | `i965` |
 
 **Browser client (`ultra-play.js`):**
@@ -156,6 +181,8 @@ Single WSS connection per player: `wss://<host>:6081/stream` (or 6082).
 |---------|---------|
 | `start` | Connect with transport settings |
 | `reconfigure` | Live settings change |
+| `selectGame` | Pick or switch game (`game`: `ra2` \| `aoe2` \| `starcraft`) |
+| `watch` | Join as spectator (manual — user clicks Watch stream) |
 | `ping` | RTT measurement |
 | `mousemove`, `mousedown`, `mouseup`, `wheel` | Pointer input |
 | `keydown`, `keyup`, `keyup_all` | Keyboard |
@@ -164,7 +191,12 @@ Single WSS connection per player: `wss://<host>:6081/stream` (or 6082).
 
 | Message | Purpose |
 |---------|---------|
-| `hello`, `ready` | Session + active settings |
+| `hello` | Session + available games + controller presence |
+| `ready` | Stream active (`reason`: `start`, `watch`, `display_change`, `helper_restart`, …) |
+| `selectGameResult` | Game launch success/failure |
+| `controllerBusy` | Another client holds the controller slot |
+| `waitingForController` | Spectator waiting for controller |
+| `role` | `controller` or `spectator` |
 | `video` | Base64 H.264/HEVC bitstream |
 | `audio` | Base64 Opus or PCM |
 | `pong` | RTT reply |
@@ -175,13 +207,15 @@ Video/audio use base64 in JSON (~33% overhead — known improvement area).
 
 ```text
 /volume2/Data/App_Development/ra2-lan-party/
-  assets-game2/       ← ASSETS_DIR (NOT in backup — copyrighted)
+  assets-game2/       ← ASSETS_DIR for RA2 (NOT in backup — copyrighted)
   prefixes/           ← Wine state + serials (IN backup)
   project/            ← This repo (IN backup)
   logs/player1,2/     ← Diagnostics (IN backup)
   tls/                ← HTTPS certs (IN backup)
   backups/            ← backup-golden-master.sh output
   .env                ← Secrets (IN backup — protect archive)
+
+/volume2/Data/Games/  ← AoE2 + StarCraft unpacked trees (NOT in backup)
 ```
 
 ### 3.4 Key files and scripts
@@ -190,17 +224,23 @@ Video/audio use base64 in JSON (~33% overhead — known improvement area).
 |------|------|
 | `compose.yaml` | Two-player base, shared env anchor |
 | `compose.https.yaml` | TLS mounts |
-| `compose.ultra.yaml` | Ultra overlay, VA-API devices |
+| `compose.ultra.yaml` | Ultra overlay, VA-API devices, multi-game mounts |
+| `config/games.json` | Game profiles (exe, assets, display, ddraw) |
 | `container/Dockerfile.ultra` | Image build |
-| `container/ra2-stream-gateway.py` | HTTPS/WSS server, input via xdotool |
+| `container/ra2-stream-gateway.py` | HTTPS/WSS server, input via xdotool, game select |
 | `container/stream-helper.c` | GStreamer capture/encode |
+| `container/start-game-ultra.sh` | Launcher supervisor loop |
+| `container/run-game-session.sh` | Single-game session runner |
+| `container/game-launcher.sh` | CLI game menu (container-side) |
+| `container/secure-game-select.sh` | Validates browser game selection |
 | `container/remote-ultra/ultra-play.js` | Browser client |
 | `scripts/redeploy-ultra.sh` | Sync + recreate both players |
 | `scripts/restart-audio-ultra.sh` | Pulse → game → gateway |
+| `scripts/unpack-starcraft-broodwar.sh` | Stage SC disc assets on NAS |
 | `scripts/validate-env.sh` | Pre-flight `.env` |
 | `scripts/backup-golden-master.sh` | Image + runtime backup (no game files) |
 | `scripts/sync-to-nas.sh` | Mac → NAS rsync/tar |
-| `tests/test_project_contracts.py` | 77 contract tests |
+| `tests/test_project_contracts.py` | 79 contract tests |
 
 ### 3.5 Container packages (Arch)
 
@@ -224,6 +264,10 @@ LOGS_DIR=.../logs
 TLS_DIR=.../tls
 RENDER_GID=937
 VIDEO_GID=44
+# Optional multi-game asset overrides:
+# AOE2_ASSETS_HOST=...
+# SC_ASSETS_HOST=...
+# SC_DISC_HOST=...
 ```
 
 ---
@@ -241,6 +285,8 @@ sh scripts/generate-tls-certs.sh   # if tls/ empty
 
 # 3. Stage game files separately (legal — not in repo)
 sh scripts/ingest-assets.sh /path/to/RA2
+# AoE2 + StarCraft: unpack to paths in compose.ultra.yaml
+sh scripts/unpack-starcraft-broodwar.sh   # if using StarCraft
 
 # 4. Build + deploy both players
 RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
@@ -249,6 +295,7 @@ RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 python3 -m pytest tests/ -q
 curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6081/
 curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6082/
+curl -sk -o /dev/null -w "%{http_code}\n" "https://127.0.0.1:6081/ultra-play.js?v=47"
 ```
 
 **From Mac after edits:**
@@ -257,7 +304,7 @@ curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6082/
 NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 ```
 
-**Manual play test:** connect, audio, game mode (fullscreen + lock), dual cursors, multiplayer LAN discovery, 10+ min stable gameplay.
+**Manual play test:** click to connect, pick each game, audio, game mode (fullscreen + lock), dual cursors, switch game via Transport, spectator manual join, 10+ min stable gameplay.
 
 ---
 
@@ -265,26 +312,29 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 
 | # | Issue | Fix |
 |---|-------|-----|
-| 1 | Map load freeze | Never rewrite game INI in `start_helper()` — only at gamemd launch |
+| 1 | Map load freeze (RA2) | Never rewrite game INI in `start_helper()` — only at game launch via `sync-game-transport.sh` |
 | 2 | HEVC missing from menu | Leave `ULTRA_STREAM_CODEC_LOCK` empty |
 | 3 | Stale code after sync | Always `--force-recreate` containers |
 | 4 | SSH LAN timeout | Use `NAS_HOST=MediaServer2` (DDNS) |
 | 5 | Player 2 URL dead | Deploy both players; forward TCP 6082 |
 | 6 | `VNC_PASSWORD` missing | Add shared `VNC_PASSWORD` to `.env` |
 | 7 | Silent audio after Pulse restart | `restart-audio-ultra.sh` |
-| 8 | gamemd crash / lockup | CPU pin game cores 0/1, encode 2/3 |
+| 8 | Game crash / lockup | CPU pin game cores 0/1, encode 2/3 |
 | 9 | VA-API black video | Remove iHD; use `LIBVA_DRIVER_NAME=i965` |
 | 10 | VAProfileNone on DSM | `enable-host-transcode.sh` |
 | 11 | Low RAM OOM | `two-player-low` profile; upgrade RAM |
 | 12 | HEVC decode fail in browser | Auto-fallback H265_10 → H265 → H264 |
-| 13 | Old client cached | Hard refresh; bump `SETTINGS_VERSION` |
+| 13 | Old client cached | Hard refresh; bump `SETTINGS_VERSION` and `?v=` in `index.html` |
 | 14 | WebCodecs blocked on HTTP | Use HTTPS overlay |
-| 15 | Multiplayer LAN fail | `wsock32.dll` + bridge network |
+| 15 | Multiplayer LAN fail (RA2) | `wsock32.dll` + bridge network |
 | 16 | Game mode flicker / disconnect | Don't exit game mode on `blur`; use `gameModeBusy` grace |
 | 17 | Game mode instant kick-out | Request FS + pointer lock same user gesture; no await between |
 | 18 | Mouse dead in game mode | Document-level capture listeners (lock targets `#gameSurface`) |
 | 19 | Stuck **L** key on Ctrl+Alt+L | Shortcut handled in capture phase; never forwarded; `releasePressedKeys()` on enter |
 | 20 | redeploy websockify false positive | Verify with `curl` + `docker ps` — container may still be healthy |
+| 21 | **Click to choose a game** dead | Gateway must strip `?v=` from static paths (`urlparse(path).path`); otherwise JS returns 426 |
+| 22 | Spectator auto-joined too fast | Removed auto `watchStream()` — user clicks **Watch stream** manually |
+| 23 | Game picker blocked on connect | Do not call `ensureDecoders()` before WebSocket opens |
 
 ---
 
@@ -296,7 +346,7 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 |--------|-------|
 | Ultra image size | ~3.41 GB |
 | Per-container RAM | ~240–260 MB of 512 MB limit |
-| `gamemd.exe` CPU | ~75–100% of one core (pinned) |
+| Game process CPU | ~75–100% of one core (pinned) |
 | `stream-helper` CPU | ~12–16% of one core (with GPU convert) |
 | Gateway CPU while streaming | ~9% of one core |
 | Effective stream fps | ~22 fps at 24 fps target |
@@ -330,11 +380,14 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 2. Wine `amd64` + `win32` prefix + multilib
 3. Pulse restart → must restart game
 4. One stream-helper per active session
-5. Game INI sync at launch only — not during helper start
+5. RA2 INI sync at launch only — not during helper start
 6. Opus 48 kHz end-to-end
 7. Full input forwarding — no broad key guards
 8. Game mode: `#gameSurface` for both FS and pointer lock; document-level mouse capture when locked
 9. Ctrl+Alt+L never forwarded as game keydown
+10. Static assets: gateway strips URL query strings before filesystem lookup
+11. Spectator join requires explicit user click — no auto `watchStream()`
+12. Browser connect: show game picker before starting decoders/stream
 
 ---
 
@@ -355,14 +408,14 @@ Output: `/volume2/Data/App_Development/ra2-lan-party/backups/golden-master-YYYYM
 
 - `ra2-lan-party-ultra-image.tar.gz` — Docker image
 - `ra2-golden-master-runtime.tar.gz` — project, prefixes, tls, logs, .env
-- **Excludes:** `assets/`, `assets-game1/`, `assets-game2/`, `RA2Yuri_Game1/`
+- **Excludes:** `assets/`, `assets-game1/`, `assets-game2/`, `RA2Yuri_Game1/`, external game trees
 
 ### 8.2 Restore sketch
 
 ```bash
 docker load < ra2-lan-party-ultra-image.tar.gz
 tar -xzf ra2-golden-master-runtime.tar.gz -C /volume2/Data/App_Development/ra2-lan-party
-# Re-stage game files to assets-game2 separately
+# Re-stage game files separately (RA2, AoE2, StarCraft)
 RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ```
 
@@ -371,10 +424,11 @@ RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ## 9. Verification
 
 ```bash
-python3 -m pytest tests/ -q                           # expect 77 passed
+python3 -m pytest tests/ -q                           # expect 79 passed
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 curl -sk -o /dev/null -w "6081=%{http_code}\n" https://peterjfrancoiii2.synology.me:6081/
 curl -sk -o /dev/null -w "6082=%{http_code}\n" https://peterjfrancoiii2.synology.me:6082/
+curl -sk -o /dev/null -w "js=%{http_code}\n" "https://peterjfrancoiii2.synology.me:6081/ultra-play.js?v=47"
 docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
 ```
 
@@ -386,6 +440,7 @@ docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
 |-----|-----|
 | **This file** | Authoritative golden master |
 | `README.md` | Repo entry point |
+| `assets-example/README.md` | Game asset staging per title |
 | `docs/ULTRA_LIGHT_ARCH_STREAMING.md` | Transport menu shorthand |
 | `docs/HTTPS.md` | TLS options |
 | `docs/NAS_DEPLOY_STATUS.md` | Operator snapshot |

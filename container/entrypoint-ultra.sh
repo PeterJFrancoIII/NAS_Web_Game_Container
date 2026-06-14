@@ -2,13 +2,18 @@
 set -euo pipefail
 
 ASSETS_DIR="${ASSETS_DIR:-/home/commander/game_assets}"
+AOE2_ASSETS_DIR="${AOE2_ASSETS_DIR:-/home/commander/aoe2_assets}"
+SC_ASSETS_DIR="${SC_ASSETS_DIR:-/home/commander/sc_assets}"
 GAME_DIR="${WINEPREFIX:-/home/commander/.wine}/drive_c/RA2"
+AOE2_DIR="${WINEPREFIX:-/home/commander/.wine}/drive_c/AOE2"
+SC_DIR="${WINEPREFIX:-/home/commander/.wine}/drive_c/SC"
 GAME_EXE="${GAME_EXE:-RA2MD.exe}"
 PLAYER_ID="${PLAYER_ID:-unknown}"
 PLAYER_SERIAL="${PLAYER_SERIAL:-}"
-RESOLUTION="${RESOLUTION:-960x720}"
-RA2_DISPLAY_DEPTH="${RA2_DISPLAY_DEPTH:-24}"
+RESOLUTION="${RESOLUTION:-1024x768}"
+RA2_DISPLAY_DEPTH="${RA2_DISPLAY_DEPTH:-16}"
 WINE_ARCH="${WINEARCH:-win64}"
+GAME_LAUNCHER_ENABLED="${GAME_LAUNCHER_ENABLED:-1}"
 export RESOLUTION RA2_DISPLAY_DEPTH
 
 ULTRA_DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
@@ -41,6 +46,18 @@ if ! grep -aq "cnc-ddraw" "${ASSETS_DIR}/ddraw.dll" 2>/dev/null; then
   exit 1
 fi
 
+if [ -f "${AOE2_ASSETS_DIR}/EMPIRES2.EXE" ]; then
+  log "AOE2 assets detected at ${AOE2_ASSETS_DIR}"
+else
+  log "AOE2 assets not mounted (${AOE2_ASSETS_DIR}); launcher will offer RA2 only"
+fi
+
+if [ -f "${SC_ASSETS_DIR}/StarCraft.exe" ] && [ -f "${SC_ASSETS_DIR}/StarCraft.mpq" ] && [ -f "${SC_ASSETS_DIR}/BroodWar.mpq" ]; then
+  log "StarCraft assets detected at ${SC_ASSETS_DIR}"
+else
+  log "StarCraft assets not mounted (${SC_ASSETS_DIR}); launcher will omit StarCraft"
+fi
+
 mkdir -p "${WINEPREFIX}"
 
 XVFB_PID=""
@@ -66,6 +83,16 @@ wine_prefix_ready() {
   fi
 }
 
+link_game_assets() {
+  target="$1"
+  source="$2"
+  if [ ! -d "$source" ] && [ ! -f "$source" ]; then
+    return 0
+  fi
+  rm -rf "$target"
+  ln -s "$source" "$target"
+}
+
 if [ ! -f "${WINEPREFIX}/.ra2_initialized" ] || ! wine_prefix_ready; then
   log "Initializing Wine prefix."
   start_setup_display
@@ -77,16 +104,22 @@ if [ ! -f "${WINEPREFIX}/.ra2_initialized" ] || ! wine_prefix_ready; then
     fi
     wineserver -k >/dev/null 2>&1 || true
   fi
-  rm -rf "$GAME_DIR"
-  ln -s "$ASSETS_DIR" "$GAME_DIR"
+  link_game_assets "$GAME_DIR" "$ASSETS_DIR"
+  link_game_assets "$AOE2_DIR" "$AOE2_ASSETS_DIR"
+  if [ -f "${SC_ASSETS_DIR}/StarCraft.exe" ] && [ -f "${SC_ASSETS_DIR}/StarCraft.mpq" ]; then
+    link_game_assets "$SC_DIR" "$SC_ASSETS_DIR"
+  fi
   touch "${WINEPREFIX}/.ra2_initialized"
 elif [ -z "$XVFB_PID" ]; then
   start_setup_display
 fi
 
-if [ ! -L "$GAME_DIR" ]; then
-  rm -rf "$GAME_DIR"
-  ln -s "$ASSETS_DIR" "$GAME_DIR"
+link_game_assets "$GAME_DIR" "$ASSETS_DIR"
+if [ -f "${AOE2_ASSETS_DIR}/EMPIRES2.EXE" ]; then
+  link_game_assets "$AOE2_DIR" "$AOE2_ASSETS_DIR"
+fi
+if [ -f "${SC_ASSETS_DIR}/StarCraft.exe" ] && [ -f "${SC_ASSETS_DIR}/StarCraft.mpq" ]; then
+  link_game_assets "$SC_DIR" "$SC_ASSETS_DIR"
 fi
 
 configure_serial() {
@@ -110,6 +143,11 @@ if wine_prefix_ready; then
   clear_legacy_app_compat "gamemd.exe"
   clear_legacy_app_compat "RA2.exe"
   clear_legacy_app_compat "game.exe"
+  clear_legacy_app_compat "EMPIRES2.EXE"
+  clear_legacy_app_compat "Brood War.exe"
+  clear_legacy_app_compat "BROODWAR.EXE"
+  clear_legacy_app_compat "StarCraft.exe"
+  clear_legacy_app_compat "STARCRAFT.EXE"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Red Alert 2"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\Westwood\\Red Alert 2"
   configure_serial "HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Westwood\\Yuri's Revenge"
@@ -120,11 +158,21 @@ fi
 cleanup
 trap - EXIT
 
-for reg in system.reg user.reg userdef.reg .ra2_initialized .update-timestamp; do
+for reg in system.reg user.reg userdef.reg .ra2_initialized .update-timestamp .aoe2_registered .starcraft_registered; do
   if [ -e "${WINEPREFIX}/${reg}" ]; then
     chmod u+rwX "${WINEPREFIX}/${reg}"
   fi
 done
 
-log "Starting ultra stream gateway and ${GAME_EXE}."
+if [ "$GAME_LAUNCHER_ENABLED" = "1" ]; then
+  log "Starting ultra stream gateway and game launcher."
+else
+  log "Starting ultra stream gateway and ${GAME_EXE}."
+fi
+
+# Locked Openbox only — ignore any user-local WM config that could expose a desktop shell.
+rm -rf /home/commander/.config/openbox 2>/dev/null || true
+rm -f /home/commander/.ra2/selected-game 2>/dev/null || true
+/bin/sh /opt/ra2/game-session-state.sh waiting 2>/dev/null || true
+
 exec supervisord -c /opt/ra2/supervisord.conf
