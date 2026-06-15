@@ -105,6 +105,10 @@ compose_file_args() {
   extra="${2:-}"
 
   printf '%s\n' "-f" "compose.yaml"
+  if player1_bridge_network_enabled; then
+    printf '%s\n' "-f" "compose.player1-network.yaml"
+  fi
+  printf '%s\n' "-f" "compose.player2-network.yaml"
   if tls_material_present "$env_file"; then
     printf '%s\n' "-f" "compose.https.yaml"
   fi
@@ -134,6 +138,12 @@ compose_file_args() {
   fi
   if ultra_overlay_enabled; then
     printf '%s\n' "-f" "compose.ultra.yaml"
+  fi
+  if ultra_udp_overlay_enabled; then
+    printf '%s\n' "-f" "compose.ultra-udp.yaml"
+  fi
+  if ultra_udp_host_overlay_enabled; then
+    printf '%s\n' "-f" "compose.ultra-udp-host.yaml"
   fi
   if tailscale_overlay_enabled; then
     printf '%s\n' "-f" "compose.tailscale.yaml"
@@ -180,6 +190,18 @@ ultra_overlay_enabled() {
   [ "${RA2_COMPOSE_ULTRA:-0}" = "1" ] && [ -f compose.ultra.yaml ]
 }
 
+ultra_udp_overlay_enabled() {
+  [ "${RA2_COMPOSE_ULTRA_UDP:-0}" = "1" ] && [ -f compose.ultra-udp.yaml ]
+}
+
+ultra_udp_host_overlay_enabled() {
+  [ "${RA2_COMPOSE_ULTRA_UDP_HOST:-0}" = "1" ] && [ -f compose.ultra-udp-host.yaml ]
+}
+
+player1_bridge_network_enabled() {
+  [ "${RA2_COMPOSE_ULTRA_UDP_HOST:-0}" != "1" ]
+}
+
 tailscale_overlay_enabled() {
   [ "${RA2_COMPOSE_TAILSCALE:-0}" = "1" ] && [ -f compose.tailscale.yaml ]
 }
@@ -189,6 +211,10 @@ run_compose() {
   shift
 
   compose_args="-f compose.yaml"
+  if player1_bridge_network_enabled; then
+    compose_args="$compose_args -f compose.player1-network.yaml"
+  fi
+  compose_args="$compose_args -f compose.player2-network.yaml"
   if tls_material_present "$env_file"; then
     compose_args="$compose_args -f compose.https.yaml"
   fi
@@ -221,6 +247,12 @@ run_compose() {
   fi
   if ultra_overlay_enabled; then
     compose_args="$compose_args -f compose.ultra.yaml"
+  fi
+  if ultra_udp_overlay_enabled; then
+    compose_args="$compose_args -f compose.ultra-udp.yaml"
+  fi
+  if ultra_udp_host_overlay_enabled; then
+    compose_args="$compose_args -f compose.ultra-udp-host.yaml"
   fi
   if tailscale_overlay_enabled; then
     compose_args="$compose_args -f compose.tailscale.yaml"

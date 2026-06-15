@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import signal
@@ -24,42 +25,146 @@ OFFER_WAIT_SECONDS = int(os.environ.get("WEBRTC_OFFER_WAIT_SECONDS", "20"))
 NAS_LAN_IP = os.environ.get("NAS_LAN_IP", "").strip()
 NAS_PUBLIC_HOSTNAME = os.environ.get("NAS_PUBLIC_HOSTNAME", "").strip()
 ICE_CANDIDATE_HOST = os.environ.get("WEBRTC_ICE_CANDIDATE_HOST", "").strip()
+_RESOLVED_PUBLIC_ICE_HOST: Optional[str] = None
+
+
+def _sdp_mline_mids(sdp: str) -> list[str]:
+    mids: list[str] = []
+    for line in sdp.splitlines():
+        clean = line.strip()
+        if clean.startswith("a=mid:"):
+            mids.append(clean[6:])
+    return mids
+
+
+def _looks_like_ip(value: str) -> bool:
+    try:
+        socket.inet_pton(socket.AF_INET, value)
+        return True
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, value)
+        return True
+    except OSError:
+        return False
 
 
 def _public_ice_host() -> str:
+    global _RESOLVED_PUBLIC_ICE_HOST
+    if _RESOLVED_PUBLIC_ICE_HOST is not None:
+        return _RESOLVED_PUBLIC_ICE_HOST
     if ICE_CANDIDATE_HOST:
-        return ICE_CANDIDATE_HOST
-    if NAS_PUBLIC_HOSTNAME:
-        try:
-            return socket.gethostbyname(NAS_PUBLIC_HOSTNAME)
-        except OSError as exc:
-            print(f"[webrtc] could not resolve NAS_PUBLIC_HOSTNAME={NAS_PUBLIC_HOSTNAME}: {exc}", flush=True)
-    return NAS_LAN_IP
+        host = ICE_CANDIDATE_HOST
+    elif NAS_PUBLIC_HOSTNAME:
+        host = NAS_PUBLIC_HOSTNAME
+    else:
+        _RESOLVED_PUBLIC_ICE_HOST = NAS_LAN_IP
+        return _RESOLVED_PUBLIC_ICE_HOST
+    if not host or _looks_like_ip(host):
+        _RESOLVED_PUBLIC_ICE_HOST = host
+        return _RESOLVED_PUBLIC_ICE_HOST
+    try:
+        resolved = socket.gethostbyname(host)
+        print(f"[webrtc] resolved ICE host {host} -> {resolved}", flush=True)
+        _RESOLVED_PUBLIC_ICE_HOST = resolved
+        return resolved
+    except OSError as exc:
+        print(f"[webrtc] could not resolve ICE host {host}: {exc}", flush=True)
+        _RESOLVED_PUBLIC_ICE_HOST = host
+        return host
 
 
-def _rewrite_ice_candidate(candidate: str) -> str:
-    """Replace Docker-internal host candidates with the address browsers can reach."""
-    target_host = _public_ice_host()
-    if not candidate or not target_host:
-        return candidate
+def _ice_advertise_hosts(address: str) -> list[str]:
+    """LAN + public addresses so ICE works on the same subnet and over DDNS."""
+    hosts: list[str] = []
+    if NAS_LAN_IP:
+        hosts.append(NAS_LAN_IP)
+    public = _public_ice_host()
+    if public and public not in hosts:
+        hosts.append(public)
+    if not hosts:
+        hosts.append(address)
+    return hosts
+
+
+def _replace_candidate_host(candidate: str, new_host: str) -> str:
     parts = candidate.split()
     if len(parts) < 6:
         return candidate
-    address = parts[4]
-    if address in {target_host, NAS_LAN_IP, NAS_PUBLIC_HOSTNAME}:
+    if parts[4] == new_host:
         return candidate
-    if address.startswith("172.") or address.startswith("10.") or address.startswith("192.168."):
-        rewritten = parts[:]
-        rewritten[4] = target_host
-        new_candidate = " ".join(rewritten)
-        port = parts[5] if len(parts) > 5 else "?"
-        proto = parts[2] if len(parts) > 2 else "?"
-        print(
-            f"[webrtc] rewrote ICE host {address} -> {target_host} port {port} ({proto})",
-            flush=True,
-        )
-        return new_candidate
-    return candidate
+    rewritten = parts[:]
+    rewritten[4] = new_host
+    return " ".join(rewritten)
+
+
+def _expand_ice_candidates(candidate: str) -> list[str]:
+    """Duplicate private/Docker candidates for LAN IP and public DDNS IP."""
+    if not candidate:
+        return [candidate]
+    parts = candidate.split()
+    if len(parts) < 6:
+        return [candidate]
+    address = parts[4]
+    public = _public_ice_host()
+    known = {h for h in (NAS_LAN_IP, public, NAS_PUBLIC_HOSTNAME, ICE_CANDIDATE_HOST) if h}
+    if address in known or address.startswith(("172.", "10.", "192.168.")):
+        targets = _ice_advertise_hosts(address)
+        if address not in known and address.startswith(("172.", "10.", "192.168.")):
+            port = parts[5] if len(parts) > 5 else "?"
+            proto = parts[2] if len(parts) > 2 else "?"
+            print(
+                f"[webrtc] expand ICE {address} -> {targets} port {port} ({proto})",
+                flush=True,
+            )
+        out: list[str] = []
+        seen: set[str] = set()
+        for host in targets:
+            rewritten = _replace_candidate_host(candidate, host)
+            if rewritten not in seen:
+                seen.add(rewritten)
+                out.append(rewritten)
+        return out or [candidate]
+    return [candidate]
+
+
+def _rewrite_sdp_ice_candidates(sdp: str) -> str:
+    lines = sdp.splitlines()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("a=candidate:"):
+            out.append(line)
+            continue
+        cand = stripped[len("a=candidate:") :]
+        prefix = line[: len(line) - len(stripped)] if stripped else ""
+        for expanded in _expand_ice_candidates(cand):
+            out.append(f"{prefix}a=candidate:{expanded}")
+    ending = "\r\n" if "\r\n" in sdp else "\n"
+    body = ending.join(out)
+    if sdp.endswith(ending):
+        body += ending
+    return body
+
+
+def _sanitize_client_answer_sdp(sdp: str) -> str:
+    """Drop mDNS host candidates the GStreamer side cannot resolve."""
+    lines: list[str] = []
+    dropped = 0
+    for line in sdp.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("a=candidate:") and ".local" in stripped:
+            dropped += 1
+            continue
+        lines.append(line)
+    if dropped:
+        print(f"[webrtc] stripped {dropped} mDNS candidate(s) from client answer SDP", flush=True)
+    ending = "\r\n" if "\r\n" in sdp else "\n"
+    body = ending.join(lines)
+    if sdp.endswith(ending):
+        body += ending
+    return body
 
 
 def _ssl_context():
@@ -72,6 +177,35 @@ def _ssl_context():
     return ctx
 
 
+def _summarize_sdp_ice(sdp: str) -> dict:
+    from collections import Counter
+
+    types: Counter[str] = Counter()
+    protos: Counter[str] = Counter()
+    for raw in sdp.splitlines():
+        line = raw.strip()
+        if not line.startswith("a=candidate:"):
+            continue
+        toks = line[len("a=candidate:") :].split()
+        if len(toks) >= 3:
+            protos[toks[2].lower()] += 1
+        if "typ" in toks:
+            idx = toks.index("typ")
+            if idx + 1 < len(toks):
+                types[toks[idx + 1].lower()] += 1
+    return {
+        "candidates": sum(types.values()),
+        "types": dict(types),
+        "protocols": dict(protos),
+        "hasIceLite": "a=ice-lite" in sdp,
+    }
+
+
+def _sdp_ice_has_usable_candidates(summary: dict) -> bool:
+    types = summary.get("types") or {}
+    return bool(types.get("srflx") or types.get("relay") or types.get("host"))
+
+
 class WebRtcBridge:
     def __init__(self) -> None:
         self.clients: set[WebSocketServerProtocol] = set()
@@ -82,7 +216,29 @@ class WebRtcBridge:
         self.session_deadline: Optional[float] = None
         self.idle_deadline: Optional[float] = None
         self._helper_start_monotonic: Optional[float] = None
+        self._helper_shutdown_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self.client_useful_ice = 0
+        self.sdp_mids: list[str] = []
+        self.last_answer_ice: dict = {}
+        self.server_ice_payloads: list[dict] = []
+
+    async def _cancel_helper_shutdown(self) -> None:
+        if not self._helper_shutdown_task:
+            return
+        self._helper_shutdown_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._helper_shutdown_task
+        self._helper_shutdown_task = None
+
+    async def _delayed_helper_shutdown(self, delay: float, reason: str) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        if not self.clients:
+            print(f"[webrtc] signaling idle for {delay:.0f}s; stopping helper", flush=True)
+            await self._stop_helper(reason)
 
     async def _broadcast(self, payload: dict) -> None:
         if not self.clients:
@@ -144,10 +300,12 @@ class WebRtcBridge:
     async def ensure_helper(self) -> None:
         async with self._lock:
             if self.helper and self.helper.poll() is None:
-                return
-            await self._stop_helper("ensure_helper_restart")
+                await self._stop_helper("fresh_client_session")
+            elif self.helper:
+                await self._stop_helper("fresh_client_session")
             self.offer_event.clear()
             self.pending_offer = None
+            self.server_ice_payloads = []
             print("[webrtc] starting media helper", flush=True)
             self.helper = subprocess.Popen(
                 [HELPER],
@@ -174,6 +332,11 @@ class WebRtcBridge:
             if line:
                 print(f"[webrtc-helper] {line}", flush=True)
 
+    def _sdp_mid_for_mline(self, mline: int) -> str:
+        if self.sdp_mids and 0 <= mline < len(self.sdp_mids):
+            return self.sdp_mids[mline]
+        return str(mline)
+
     async def _read_helper_stdout(self, helper: subprocess.Popen[str]) -> None:
         if not helper.stdout:
             return
@@ -187,7 +350,9 @@ class WebRtcBridge:
             parts = line.split(" ", 2)
             if parts[0] == "OFFER" and len(parts) == 2:
                 sdp = base64.b64decode(parts[1]).decode("utf-8", errors="replace")
+                sdp = _rewrite_sdp_ice_candidates(sdp)
                 self.pending_offer = sdp
+                self.sdp_mids = _sdp_mline_mids(sdp)
                 self.offer_event.set()
                 if self._helper_start_monotonic is not None:
                     elapsed_ms = int(
@@ -200,18 +365,32 @@ class WebRtcBridge:
                     )
                 else:
                     print(f"[webrtc] offer ready ({len(sdp)} bytes)", flush=True)
-            elif parts[0] == "ICE" and len(parts) == 3:
-                candidate = base64.b64decode(parts[2]).decode("utf-8", errors="replace")
+            elif parts[0] == "ICE" and len(parts) >= 2:
+                mline = int(parts[1])
+                candidate = ""
+                if len(parts) == 3:
+                    candidate = base64.b64decode(parts[2]).decode("utf-8", errors="replace")
                 if not candidate:
+                    print(f"[webrtc] end-of-candidates from helper mline={mline}", flush=True)
+                    await self._broadcast(
+                        {
+                            "type": "ice",
+                            "candidate": "",
+                            "sdpMid": self._sdp_mid_for_mline(mline),
+                            "sdpMLineIndex": mline,
+                            "complete": True,
+                        }
+                    )
                     continue
-                candidate = _rewrite_ice_candidate(candidate)
-                await self._broadcast(
-                    {
+                for expanded in _expand_ice_candidates(candidate):
+                    payload = {
                         "type": "ice",
-                        "candidate": candidate,
-                        "sdpMLineIndex": int(parts[1]),
+                        "candidate": expanded,
+                        "sdpMid": self._sdp_mid_for_mline(mline),
+                        "sdpMLineIndex": mline,
                     }
-                )
+                    self.server_ice_payloads.append(payload)
+                    await self._broadcast(payload)
             else:
                 print(f"[webrtc] helper: {line}", flush=True)
 
@@ -241,6 +420,7 @@ class WebRtcBridge:
                 await self._stop_helper("idle_timeout")
 
     async def handle_client(self, websocket: WebSocketServerProtocol) -> None:
+        await self._cancel_helper_shutdown()
         if self.clients:
             print(
                 f"[webrtc] rejecting extra client ({len(self.clients)} active)",
@@ -250,6 +430,9 @@ class WebRtcBridge:
             return
         self.clients.add(websocket)
         self._touch_session()
+        self.client_useful_ice = 0
+        self.sdp_mids = []
+        self.last_answer_ice = {}
         print(f"[webrtc] client connected ({len(self.clients)} active)", flush=True)
         try:
             await self.ensure_helper()
@@ -260,6 +443,13 @@ class WebRtcBridge:
             if self.pending_offer:
                 await websocket.send(json.dumps({"type": "offer", "sdp": self.pending_offer}))
                 print("[webrtc] offer sent to client", flush=True)
+                if self.server_ice_payloads:
+                    print(
+                        f"[webrtc] replaying {len(self.server_ice_payloads)} cached server ICE candidate(s)",
+                        flush=True,
+                    )
+                    for payload in self.server_ice_payloads:
+                        await websocket.send(json.dumps(payload))
             async for message in websocket:
                 self._touch_session()
                 await self._handle_message(message)
@@ -269,10 +459,12 @@ class WebRtcBridge:
             self.clients.discard(websocket)
             print(f"[webrtc] client disconnected ({len(self.clients)} active)", flush=True)
             if not self.clients:
-                print("[webrtc] no active clients; stopping helper for clean reconnect", flush=True)
-                await self._stop_helper("last_client_disconnected")
+                await self._cancel_helper_shutdown()
                 loop = asyncio.get_running_loop()
                 self.idle_deadline = loop.time() + IDLE_SHUTDOWN_SECONDS
+                self._helper_shutdown_task = asyncio.create_task(
+                    self._delayed_helper_shutdown(IDLE_SHUTDOWN_SECONDS, "signaling_idle")
+                )
 
     async def _handle_message(self, message: str) -> None:
         data = json.loads(message)
@@ -280,18 +472,60 @@ class WebRtcBridge:
         if message_type:
             print(f"[webrtc] message from client: {message_type}", flush=True)
         if data.get("type") == "answer" and self.helper and self.helper.stdin:
-            sdp = data.get("sdp", "")
+            sdp = _sanitize_client_answer_sdp(data.get("sdp", ""))
             encoded = base64.b64encode(sdp.encode("utf-8")).decode("ascii")
             self.helper.stdin.write(f"ANSWER {encoded}\n")
             self.helper.stdin.flush()
-            print("[webrtc] remote answer applied", flush=True)
+            self.last_answer_ice = _summarize_sdp_ice(sdp)
+            print(
+                f"[webrtc] remote answer applied ({len(sdp)} bytes, ICE: {json.dumps(self.last_answer_ice, sort_keys=True)})",
+                flush=True,
+            )
             return
         if data.get("type") == "ice" and self.helper and self.helper.stdin:
             candidate = data.get("candidate") or ""
-            if not candidate:
-                return
-            encoded = base64.b64encode(candidate.encode("utf-8")).decode("ascii")
             mline = int(data.get("sdpMLineIndex", 0))
+            if not candidate:
+                print(
+                    f"[webrtc] end-of-candidates from client mline={mline} "
+                    f"(useful={self.client_useful_ice})",
+                    flush=True,
+                )
+                if self.client_useful_ice == 0:
+                    if _sdp_ice_has_usable_candidates(self.last_answer_ice):
+                        print(
+                            "[webrtc] note: trickle had no srflx/relay, but answer SDP already "
+                            f"contains usable ICE: {json.dumps(self.last_answer_ice.get('types', {}))}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "[webrtc] WARN: no usable client ICE in trickle or answer SDP "
+                            "(need srflx/relay in answer, not mDNS .local in trickle)",
+                            flush=True,
+                        )
+                        print(
+                            "[webrtc] HINT: run play page with ?relayOnly=1 from a remote network "
+                            "and check browser icecandidateerror / answer ICE relay count",
+                            flush=True,
+                        )
+                self.helper.stdin.write(f"ICE {mline} \n")
+                self.helper.stdin.flush()
+                return
+            if ".local" in candidate and " typ host " in f" {candidate} ":
+                print(f"[webrtc] ignoring client mDNS ICE: {candidate[:80]}", flush=True)
+                return
+            parts = candidate.split()
+            addr = parts[4] if len(parts) > 4 else "?"
+            port = parts[5] if len(parts) > 5 else "?"
+            proto = parts[2] if len(parts) > 2 else "?"
+            typ = parts[7] if len(parts) > 7 else "?"
+            self.client_useful_ice += 1
+            print(
+                f"[webrtc] client ICE mline={mline} {proto} {addr}:{port} typ={typ}",
+                flush=True,
+            )
+            encoded = base64.b64encode(candidate.encode("utf-8")).decode("ascii")
             self.helper.stdin.write(f"ICE {mline} {encoded}\n")
             self.helper.stdin.flush()
 

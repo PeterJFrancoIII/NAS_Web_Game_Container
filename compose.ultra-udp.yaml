@@ -1,0 +1,117 @@
+# Ultra split-protocol overlay: UDP video feed + WSS control/audio.
+# Launch:
+#   RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 docker compose --env-file .env \
+#     -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml -f compose.ultra-udp.yaml up -d
+#
+# Video: WebRTC/RTP over UDP (62001-62010 player 1, 62021-62030 player 2).
+# Control, audio, game selection: existing WSS on 6081/6082.
+
+x-ra2-ultra-udp: &ra2-ultra-udp
+  environment:
+    ULTRA_VIDEO_UDP: "1"
+    WEBRTC_ENABLED: "1"
+    WEBRTC_ICE_UDP: "1"
+    WEBRTC_ICE_TCP: "1"
+    WEBRTC_SIGNAL_TLS: ${WEBRTC_SIGNAL_TLS:-1}
+    WEBRTC_LATENCY_PRESET: ${WEBRTC_LATENCY_PRESET:-low}
+    WEBRTC_VIDEO_CODEC: ${WEBRTC_VIDEO_CODEC:-H264}
+    WEBRTC_VIDEO_REQUIRE_HW: ${WEBRTC_VIDEO_REQUIRE_HW:-1}
+    WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-24}
+    WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-2000000}
+    WEBRTC_VIDEO_RTP_MTU: ${WEBRTC_VIDEO_RTP_MTU:-700}
+    WEBRTC_OFFER_WAIT_SECONDS: ${WEBRTC_OFFER_WAIT_SECONDS:-30}
+    WEBRTC_INPUT_BACKEND: none
+    WEBRTC_AUDIO_ENABLED: "0"
+    WEBRTC_RECOMPILE_HELPER: "1"
+  volumes:
+    - ./container/stream-helper.c:/opt/ra2/stream-helper.c:ro
+    - ./container/ra2-stream-gateway.py:/opt/ra2/ra2-stream-gateway.py:ro
+    - ./container/remote-ultra:/opt/ra2/remote-ultra:ro
+    - ./container/webrtc-media.py:/opt/ra2/webrtc-media.py:ro
+    - ./container/webrtc-media-helper.c:/opt/ra2/webrtc-media-helper.c:ro
+    - ./container/start-webrtc.sh:/opt/ra2/start-webrtc.sh:ro
+    - ./container/supervisord.ultra-udp.conf:/opt/ra2/supervisord.conf:ro
+
+services:
+  ra2-player-1:
+    <<: *ra2-ultra-udp
+    environment:
+      ULTRA_VIDEO_UDP: "1"
+      WEBRTC_ENABLED: "1"
+      WEBRTC_SIGNAL_PORT: "6090"
+      WEBRTC_LATENCY_PRESET: ${WEBRTC_LATENCY_PRESET:-low}
+      WEBRTC_RUNTIME_PRESET_FILE: /home/commander/ra2-logs-root/player1/webrtc-runtime-preset
+      WEBRTC_VIDEO_CODEC: ${WEBRTC_VIDEO_CODEC:-H264}
+      WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-30}
+      WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-1500000}
+      WEBRTC_VIDEO_RTP_MTU: ${WEBRTC_VIDEO_RTP_MTU:-700}
+      WEBRTC_UDP_PORT_MIN: ${PLAYER1_WEBRTC_UDP_MIN:-62001}
+      WEBRTC_UDP_PORT_MAX: ${PLAYER1_WEBRTC_VIDEO_UDP_MAX:-62010}
+      WEBRTC_VIDEO_UDP_PORT_MIN: ${PLAYER1_WEBRTC_VIDEO_UDP_MIN:-62001}
+      WEBRTC_VIDEO_UDP_PORT_MAX: ${PLAYER1_WEBRTC_VIDEO_UDP_MAX:-62010}
+      WEBRTC_AUDIO_UDP_PORT_MIN: ${PLAYER1_WEBRTC_AUDIO_UDP_MIN:-62011}
+      WEBRTC_AUDIO_UDP_PORT_MAX: ${PLAYER1_WEBRTC_AUDIO_UDP_MAX:-62020}
+      WEBRTC_ICE_UDP: "1"
+      WEBRTC_ICE_TCP: "1"
+      WEBRTC_ICE_CANDIDATE_HOST: ${WEBRTC_ICE_CANDIDATE_HOST:-}
+      WEBRTC_TURN_URLS: ${WEBRTC_TURN_URLS:-}
+      WEBRTC_TURN_USERNAME: ${WEBRTC_TURN_USERNAME:-}
+      WEBRTC_TURN_PASSWORD: ${WEBRTC_TURN_PASSWORD:-}
+      WEBRTC_SIGNAL_TLS: ${WEBRTC_SIGNAL_TLS:-1}
+      WEBRTC_INPUT_BACKEND: none
+      WEBRTC_AUDIO_ENABLED: "0"
+      WEBRTC_RECOMPILE_HELPER: "1"
+      NAS_PUBLIC_HOSTNAME: ${NAS_PUBLIC_HOSTNAME:-}
+      NAS_LAN_IP: ${NAS_LAN_IP:-}
+    ports:
+      - "${PLAYER1_WEBRTC_SIGNAL_PORT:-6083}:6090/tcp"
+      - "${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}:${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}/udp"
+      - "${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}:${PLAYER1_WEBRTC_UDP_MIN:-62001}-${PLAYER1_WEBRTC_UDP_MAX:-62020}/tcp"
+
+  ra2-coturn:
+    image: coturn/coturn:4.6.2
+    container_name: RA2_Coturn
+    restart: unless-stopped
+    # Match TLS key owner (uid 1000) — default coturn user (nobody) cannot read 0640 key.pem.
+    user: "1000:1000"
+    # Host mode preserves client WAN source IPs (bridge masquerades to 172.22.0.1).
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ${TLS_DIR:-/volume2/Data/App_Development/ra2-lan-party/tls}:/opt/ra2/tls:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+  ra2-player-2:
+    <<: *ra2-ultra-udp
+    environment:
+      ULTRA_VIDEO_UDP: "1"
+      WEBRTC_ENABLED: "1"
+      WEBRTC_SIGNAL_PORT: "6090"
+      WEBRTC_LATENCY_PRESET: ${WEBRTC_LATENCY_PRESET:-low}
+      WEBRTC_RUNTIME_PRESET_FILE: /home/commander/ra2-logs-root/player2/webrtc-runtime-preset
+      WEBRTC_VIDEO_CODEC: ${WEBRTC_VIDEO_CODEC:-H264}
+      WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-30}
+      WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-1500000}
+      WEBRTC_VIDEO_RTP_MTU: ${WEBRTC_VIDEO_RTP_MTU:-700}
+      WEBRTC_UDP_PORT_MIN: ${PLAYER2_WEBRTC_UDP_MIN:-62021}
+      WEBRTC_UDP_PORT_MAX: ${PLAYER2_WEBRTC_UDP_MAX:-62040}
+      WEBRTC_VIDEO_UDP_PORT_MIN: ${PLAYER2_WEBRTC_VIDEO_UDP_MIN:-62021}
+      WEBRTC_VIDEO_UDP_PORT_MAX: ${PLAYER2_WEBRTC_VIDEO_UDP_MAX:-62030}
+      WEBRTC_AUDIO_UDP_PORT_MIN: ${PLAYER2_WEBRTC_AUDIO_UDP_MIN:-62031}
+      WEBRTC_AUDIO_UDP_PORT_MAX: ${PLAYER2_WEBRTC_AUDIO_UDP_MAX:-62040}
+      WEBRTC_ICE_UDP: "1"
+      WEBRTC_ICE_TCP: "1"
+      WEBRTC_ICE_CANDIDATE_HOST: ${WEBRTC_ICE_CANDIDATE_HOST:-}
+      WEBRTC_TURN_URLS: ${WEBRTC_TURN_URLS:-}
+      WEBRTC_TURN_USERNAME: ${WEBRTC_TURN_USERNAME:-}
+      WEBRTC_TURN_PASSWORD: ${WEBRTC_TURN_PASSWORD:-}
+      WEBRTC_SIGNAL_TLS: ${WEBRTC_SIGNAL_TLS:-1}
+      WEBRTC_INPUT_BACKEND: none
+      WEBRTC_AUDIO_ENABLED: "0"
+      WEBRTC_RECOMPILE_HELPER: "1"
+      NAS_PUBLIC_HOSTNAME: ${NAS_PUBLIC_HOSTNAME:-}
+      NAS_LAN_IP: ${NAS_LAN_IP:-}
+    ports:
+      - "${PLAYER2_WEBRTC_SIGNAL_PORT:-6084}:6090/tcp"
+      - "${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}:${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}/udp"
+      - "${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}:${PLAYER2_WEBRTC_UDP_MIN:-62021}-${PLAYER2_WEBRTC_UDP_MAX:-62040}/tcp"

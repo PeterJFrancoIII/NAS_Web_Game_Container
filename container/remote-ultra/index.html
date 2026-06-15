@@ -307,32 +307,42 @@
   <div id="controlPanel" class="collapsed">
     <div id="panelHeader"><span>Transport</span><span id="panelToggle">▼</span></div>
     <div id="panelBody">
-      <div class="field">
-        <label for="videoQuality">Video quality</label>
-        <select id="videoQuality">
-          <option value="low">Low (20 fps)</option>
-          <option value="balanced" selected>Balanced (24 fps)</option>
-          <option value="sharp">Sharp (30 fps)</option>
-        </select>
+      <div id="wssVideoFields">
+        <div class="field">
+          <label for="videoQuality">Video quality</label>
+          <select id="videoQuality">
+            <option value="low">Low (20 fps)</option>
+            <option value="balanced" selected>Balanced (24 fps)</option>
+            <option value="sharp">Sharp (30 fps)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="videoCodec">Hardware encoder</label>
+          <select id="videoCodec">
+            <option value="H264">H.264 (VAAPI)</option>
+            <option value="H265">H.265 / HEVC 8-bit (hardware)</option>
+            <option value="H265_10" selected>H.265 / HEVC 10-bit (hardware)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="videoBitrate">Video bitrate</label>
+          <select id="videoBitrate">
+            <option value="300000">300 kbps</option>
+            <option value="450000">450 kbps</option>
+            <option value="600000">600 kbps</option>
+            <option value="900000">900 kbps</option>
+            <option value="1200000">1.2 Mbps</option>
+            <option value="1600000">1.6 Mbps</option>
+            <option value="2000000" selected>2.0 Mbps</option>
+          </select>
+        </div>
       </div>
-      <div class="field">
-        <label for="videoCodec">Hardware encoder</label>
-        <select id="videoCodec">
-          <option value="H264">H.264 (VAAPI)</option>
-          <option value="H265">H.265 / HEVC 8-bit (hardware)</option>
-          <option value="H265_10" selected>H.265 / HEVC 10-bit (hardware)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="videoBitrate">Video bitrate</label>
-        <select id="videoBitrate">
-          <option value="300000">300 kbps</option>
-          <option value="450000">450 kbps</option>
-          <option value="600000">600 kbps</option>
-          <option value="900000">900 kbps</option>
-          <option value="1200000">1.2 Mbps</option>
-          <option value="1600000">1.6 Mbps</option>
-          <option value="2000000" selected>2.0 Mbps</option>
+      <div class="field" id="webrtcLatencyField" hidden>
+        <label for="webrtcLatencyPreset">Video latency</label>
+        <select id="webrtcLatencyPreset">
+          <option value="stable">Stable (20 fps)</option>
+          <option value="low" selected>Low latency (30 fps)</option>
+          <option value="experimental">Experimental (HEVC)</option>
         </select>
       </div>
       <div class="field">
@@ -379,6 +389,7 @@
       <div id="transportStatus">status: loading</div>
     </div>
   </div>
-  <script src="ultra-play.js?v=47"></script>
+  <script src="webrtc-ice-utils.js"></script>
+  <script src="ultra-play.js?v=81"></script>
 </body>
 </html>

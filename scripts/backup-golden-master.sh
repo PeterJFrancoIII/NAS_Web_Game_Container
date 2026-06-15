@@ -30,6 +30,7 @@ mkdir -p "$BACKUP_DIR"
 echo "[backup] writing manifest"
 cat >"$BACKUP_DIR/MANIFEST.txt" <<MANIFEST
 RA2 NAS Golden Master backup
+Tag: golden-master-2026-06-udp-lan
 Created: $(date -Iseconds)
 Host: $(hostname)
 Image: ${RA2_ULTRA_IMAGE}
@@ -79,6 +80,7 @@ EOF
   echo "[backup] writing manifest"
   cat >"$BACKUP_DIR/MANIFEST.txt" <<MANIFEST
 RA2 NAS Golden Master backup
+Tag: golden-master-2026-06-udp-lan
 Created: $(date -Iseconds)
 Host: $(hostname)
 Image: ${IMAGE_TAG}

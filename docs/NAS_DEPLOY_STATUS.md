@@ -1,6 +1,7 @@
 # NAS Deploy Status
 
-**Golden master tag:** `golden-master-2026-06` (June 2026)  
+**Golden master tag:** `golden-master-2026-06-udp-lan` (14 June 2026)  
+**UDP LAN:** verified — see [`GOLDEN_MASTER_UDP_LAN.md`](GOLDEN_MASTER_UDP_LAN.md)
 **Host:** MediaServer2 / `192.168.0.193` / `peterjfrancoiii2.synology.me`
 
 ## Production (verified)

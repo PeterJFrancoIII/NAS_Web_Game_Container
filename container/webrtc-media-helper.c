@@ -10,6 +10,82 @@ static GMainLoop *main_loop;
 static GstElement *pipeline;
 static GstElement *webrtc;
 static gboolean offer_requested = FALSE;
+static gboolean remote_description_ready = FALSE;
+
+typedef struct {
+  guint mlineindex;
+  gchar *candidate;
+} PendingIceCandidate;
+
+static GQueue pending_remote_ice = G_QUEUE_INIT;
+
+static void protocol_line_1(const gchar *type, const gchar *payload);
+static void protocol_line_2(const gchar *type, guint index, const gchar *payload);
+
+static gchar *pending_offer_sdp = NULL;
+static gboolean offer_published = FALSE;
+static guint offer_emit_timeout_id = 0;
+
+typedef struct {
+  guint mlineindex;
+  gchar *candidate;
+} PendingLocalIce;
+
+static GQueue pending_local_ice = G_QUEUE_INIT;
+
+static void clear_pending_local_ice(void) {
+  while (!g_queue_is_empty(&pending_local_ice)) {
+    PendingLocalIce *item = g_queue_pop_head(&pending_local_ice);
+    g_free(item->candidate);
+    g_free(item);
+  }
+}
+
+static void flush_pending_local_ice(void) {
+  while (!g_queue_is_empty(&pending_local_ice)) {
+    PendingLocalIce *item = g_queue_pop_head(&pending_local_ice);
+    protocol_line_2("ICE", item->mlineindex, item->candidate ? item->candidate : "");
+    g_free(item->candidate);
+    g_free(item);
+  }
+}
+
+static void reset_offer_publish_state(void) {
+  if (offer_emit_timeout_id) {
+    g_source_remove(offer_emit_timeout_id);
+    offer_emit_timeout_id = 0;
+  }
+  g_free(pending_offer_sdp);
+  pending_offer_sdp = NULL;
+  offer_published = FALSE;
+  clear_pending_local_ice();
+}
+
+static void publish_pending_offer(void) {
+  if (offer_published) {
+    return;
+  }
+  if (!pending_offer_sdp) {
+    return;
+  }
+  offer_published = TRUE;
+  if (offer_emit_timeout_id) {
+    g_source_remove(offer_emit_timeout_id);
+    offer_emit_timeout_id = 0;
+  }
+  g_printerr("[webrtc-helper] publishing SDP offer\n");
+  protocol_line_1("OFFER", pending_offer_sdp);
+  g_free(pending_offer_sdp);
+  pending_offer_sdp = NULL;
+  flush_pending_local_ice();
+}
+
+static gboolean publish_pending_offer_timeout(gpointer user_data) {
+  offer_emit_timeout_id = 0;
+  g_printerr("[webrtc-helper] offer publish timeout — sending before local ICE complete\n");
+  publish_pending_offer();
+  return G_SOURCE_REMOVE;
+}
 
 static const gchar *env_str(const gchar *name, const gchar *fallback) {
   const gchar *value = g_getenv(name);
@@ -152,6 +228,10 @@ static gchar *video_encoder_desc(const gchar **encoding_name) {
   return NULL;
 }
 
+static gboolean webrtc_audio_enabled(void) {
+  return g_strcmp0(env_str("WEBRTC_AUDIO_ENABLED", "1"), "0") != 0;
+}
+
 static gchar *pipeline_desc(void) {
   const gchar *encoding_name = "H264";
   gchar *encoder = video_encoder_desc(&encoding_name);
@@ -164,27 +244,39 @@ static gchar *pipeline_desc(void) {
   gint width = env_int("WEBRTC_VIDEO_WIDTH", 1280);
   gint height = env_int("WEBRTC_VIDEO_HEIGHT", 720);
   gint fps = env_int("WEBRTC_VIDEO_FPS", 30);
-  gint audio_rate = env_int("WEBRTC_AUDIO_RATE", 44100);
-  gint audio_bitrate = env_int("WEBRTC_AUDIO_BITRATE", 96000);
-  gint audio_frame_ms = env_int("WEBRTC_AUDIO_FRAME_MS", 10);
-  gint pulse_port = env_int("PULSE_TCP_PORT", 4711);
   const gchar *queue =
       "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream";
 
-  gchar *desc = g_strdup_printf(
-      "webrtcbin name=sendrecv bundle-policy=max-bundle latency=0 stun-server=%s "
-      "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
-      "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
-      "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
-      "%s ! %s ! application/x-rtp,media=video,encoding-name=%s,payload=96 ! sendrecv. "
-      "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
-      "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
-      "audioconvert ! audioresample quality=0 ! %s ! "
-      "opusenc bitrate=%d bitrate-type=0 complexity=0 frame-size=%d "
-      "audio-type=restricted-lowdelay inband-fec=false dtx=false ! rtpopuspay pt=97 ! "
-      "%s ! application/x-rtp,media=audio,encoding-name=OPUS,payload=97 ! sendrecv.",
-      stun, display, fps, width, height, fps, queue, encoder, queue, encoding_name, pulse_port,
-      audio_rate, queue, audio_bitrate, audio_frame_ms, queue);
+  gchar *desc = NULL;
+  if (webrtc_audio_enabled()) {
+    gint audio_rate = env_int("WEBRTC_AUDIO_RATE", 44100);
+    gint audio_bitrate = env_int("WEBRTC_AUDIO_BITRATE", 96000);
+    gint audio_frame_ms = env_int("WEBRTC_AUDIO_FRAME_MS", 10);
+    gint pulse_port = env_int("PULSE_TCP_PORT", 4711);
+    desc = g_strdup_printf(
+        "webrtcbin name=sendrecv bundle-policy=max-bundle latency=0 stun-server=%s "
+        "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
+        "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
+        "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
+        "%s ! %s ! application/x-rtp,media=video,encoding-name=%s,payload=96 ! sendrecv. "
+        "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
+        "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
+        "audioconvert ! audioresample quality=0 ! %s ! "
+        "opusenc bitrate=%d bitrate-type=0 complexity=0 frame-size=%d "
+        "audio-type=restricted-lowdelay inband-fec=false dtx=false ! rtpopuspay pt=97 ! "
+        "%s ! application/x-rtp,media=audio,encoding-name=OPUS,payload=97 ! sendrecv.",
+        stun, display, fps, width, height, fps, queue, encoder, queue, encoding_name, pulse_port,
+        audio_rate, queue, audio_bitrate, audio_frame_ms, queue);
+  } else {
+    g_printerr("[webrtc-helper] audio disabled — video-only WebRTC pipeline\n");
+    desc = g_strdup_printf(
+        "webrtcbin name=sendrecv bundle-policy=max-bundle latency=0 stun-server=%s "
+        "ximagesrc use-damage=false show-pointer=true do-timestamp=true display-name=%s ! "
+        "videorate max-rate=%d ! videoscale method=nearest-neighbour ! "
+        "video/x-raw,width=%d,height=%d,framerate=%d/1 ! videoconvert ! %s ! "
+        "%s ! %s ! application/x-rtp,media=video,encoding-name=%s,payload=96 ! sendrecv.",
+        stun, display, fps, width, height, fps, queue, encoder, queue, encoding_name);
+  }
 
   g_free(encoder);
   return desc;
@@ -220,7 +312,12 @@ static gchar *normalize_offer_sdp_for_browsers(const gchar *sdp) {
     }
 
     if (g_str_has_prefix(clean, "a=fmtp:96 ")) {
-      if (g_strstr_len(clean, -1, "profile-level-id") != NULL) {
+      if (h264_fmtp_seen) {
+        g_free(clean);
+        continue;
+      }
+      if (g_strstr_len(clean, -1, "profile-level-id") != NULL ||
+          g_strstr_len(clean, -1, "sprop-parameter-sets") != NULL) {
         h264_fmtp_seen = TRUE;
       } else if (g_strstr_len(clean, -1, "profile-id") != NULL ||
                  g_strstr_len(clean, -1, "sprop-vps") != NULL) {
@@ -287,8 +384,47 @@ static void on_local_description_set(GstPromise *promise, gpointer user_data) {
   gst_promise_unref(promise);
 }
 
+static void apply_ice_candidate(guint mlineindex, const gchar *candidate);
+
+static void clear_pending_remote_ice(void) {
+  while (!g_queue_is_empty(&pending_remote_ice)) {
+    PendingIceCandidate *item = g_queue_pop_head(&pending_remote_ice);
+    g_free(item->candidate);
+    g_free(item);
+  }
+}
+
+static void flush_pending_remote_ice(void) {
+  guint queued = g_queue_get_length(&pending_remote_ice);
+  if (queued > 0) {
+    g_printerr("[webrtc-helper] flushing %u queued remote ICE candidates\n", queued);
+  }
+  while (!g_queue_is_empty(&pending_remote_ice)) {
+    PendingIceCandidate *item = g_queue_pop_head(&pending_remote_ice);
+    apply_ice_candidate(item->mlineindex, item->candidate);
+    g_free(item->candidate);
+    g_free(item);
+  }
+}
+
 static void on_remote_description_set(GstPromise *promise, gpointer user_data) {
+  const GstStructure *reply = gst_promise_get_reply(promise);
+  if (reply && gst_structure_has_field(reply, "error")) {
+    GError *error = NULL;
+    gst_structure_get(reply, "error", G_TYPE_ERROR, &error, NULL);
+    g_printerr(
+        "[webrtc-helper] remote answer failed: %s\n",
+        error ? error->message : "unknown error");
+    if (error) {
+      g_error_free(error);
+    }
+    clear_pending_remote_ice();
+    gst_promise_unref(promise);
+    return;
+  }
+  remote_description_ready = TRUE;
   g_printerr("[webrtc-helper] remote answer applied\n");
+  flush_pending_remote_ice();
   gst_promise_unref(promise);
 }
 
@@ -324,7 +460,9 @@ static void on_offer_created(GstPromise *promise, gpointer user_data) {
   }
 
   g_signal_emit_by_name(webrtc, "set-local-description", local_offer, local);
-  protocol_line_1("OFFER", normalized_sdp);
+  reset_offer_publish_state();
+  pending_offer_sdp = g_strdup(normalized_sdp);
+  offer_emit_timeout_id = g_timeout_add(2000, publish_pending_offer_timeout, NULL);
 
   if (local_offer != offer) {
     gst_webrtc_session_description_free(local_offer);
@@ -358,6 +496,16 @@ static void on_negotiation_needed(GstElement *element, gpointer user_data) {
 static void on_ice_candidate(GstElement *element, guint mlineindex, gchar *candidate,
                              gpointer user_data) {
   if (!candidate || !*candidate) {
+    g_printerr("[webrtc-helper] local ICE end-of-candidates mline=%u\n", mlineindex);
+    publish_pending_offer();
+    if (offer_published) {
+      protocol_line_2("ICE", mlineindex, "");
+    } else {
+      PendingLocalIce *item = g_new0(PendingLocalIce, 1);
+      item->mlineindex = mlineindex;
+      item->candidate = NULL;
+      g_queue_push_tail(&pending_local_ice, item);
+    }
     return;
   }
   gchar **parts = g_strsplit(candidate, " ", -1);
@@ -366,7 +514,14 @@ static void on_ice_candidate(GstElement *element, guint mlineindex, gchar *candi
                parts[5]);
   }
   g_strfreev(parts);
-  protocol_line_2("ICE", mlineindex, candidate);
+  if (offer_published) {
+    protocol_line_2("ICE", mlineindex, candidate);
+    return;
+  }
+  PendingLocalIce *item = g_new0(PendingLocalIce, 1);
+  item->mlineindex = mlineindex;
+  item->candidate = g_strdup(candidate);
+  g_queue_push_tail(&pending_local_ice, item);
 }
 
 static gpointer start_pipeline_thread(gpointer user_data) {
@@ -388,6 +543,8 @@ static void set_answer(const gchar *sdp_text) {
     return;
   }
 
+  remote_description_ready = FALSE;
+  clear_pending_remote_ice();
   GstWebRTCSessionDescription *answer =
       gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_ANSWER, sdp);
   GstPromise *promise = gst_promise_new_with_change_func(on_remote_description_set, NULL, NULL);
@@ -395,11 +552,31 @@ static void set_answer(const gchar *sdp_text) {
   gst_webrtc_session_description_free(answer);
 }
 
-static void add_ice_candidate(guint mlineindex, const gchar *candidate) {
+static void apply_ice_candidate(guint mlineindex, const gchar *candidate) {
   if (!candidate || !*candidate) {
+    g_printerr("[webrtc-helper] remote ICE end-of-candidates mline=%u\n", mlineindex);
+    g_signal_emit_by_name(webrtc, "add-ice-candidate", mlineindex, NULL);
     return;
   }
+  if (g_strstr_len(candidate, -1, ".local") != NULL) {
+    g_printerr("[webrtc-helper] ignoring mDNS ICE candidate (server cannot resolve .local)\n");
+    return;
+  }
+  g_printerr("[webrtc-helper] applying remote ICE mline=%u\n", mlineindex);
   g_signal_emit_by_name(webrtc, "add-ice-candidate", mlineindex, candidate);
+}
+
+static void add_ice_candidate(guint mlineindex, const gchar *candidate) {
+  if (!remote_description_ready) {
+    PendingIceCandidate *item = g_new0(PendingIceCandidate, 1);
+    item->mlineindex = mlineindex;
+    item->candidate = candidate ? g_strdup(candidate) : NULL;
+    g_queue_push_tail(&pending_remote_ice, item);
+    g_printerr("[webrtc-helper] queued remote ICE mline=%u (remote description pending)\n",
+               mlineindex);
+    return;
+  }
+  apply_ice_candidate(mlineindex, candidate);
 }
 
 static gboolean stdin_line(GIOChannel *source, GIOCondition condition, gpointer user_data) {
@@ -433,14 +610,18 @@ static gboolean stdin_line(GIOChannel *source, GIOCondition condition, gpointer 
     g_free(decoded);
   } else if (g_str_has_prefix(line, "ICE ")) {
     gchar **parts = g_strsplit(line, " ", 3);
-    if (parts[1] && parts[2]) {
+    if (parts[1]) {
       guint mlineindex = (guint)atoi(parts[1]);
-      gsize decoded_len = 0;
-      guchar *decoded = g_base64_decode(parts[2], &decoded_len);
-      gchar *candidate = g_strndup((const gchar *)decoded, decoded_len);
-      add_ice_candidate(mlineindex, candidate);
-      g_free(candidate);
-      g_free(decoded);
+      if (!parts[2] || !*parts[2]) {
+        add_ice_candidate(mlineindex, NULL);
+      } else if (parts[2]) {
+        gsize decoded_len = 0;
+        guchar *decoded = g_base64_decode(parts[2], &decoded_len);
+        gchar *candidate = g_strndup((const gchar *)decoded, decoded_len);
+        add_ice_candidate(mlineindex, candidate);
+        g_free(candidate);
+        g_free(decoded);
+      }
     }
     g_strfreev(parts);
   }

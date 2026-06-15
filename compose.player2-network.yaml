@@ -1,0 +1,6 @@
+# Static bridge IP for player 2 (LAN multiplayer).
+services:
+  ra2-player-2:
+    networks:
+      ra2_lan:
+        ipv4_address: 172.22.20.12

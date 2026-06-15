@@ -1,0 +1,6 @@
+# Static bridge IP for player 1 (LAN multiplayer). Omitted when RA2_COMPOSE_ULTRA_UDP_HOST=1.
+services:
+  ra2-player-1:
+    networks:
+      ra2_lan:
+        ipv4_address: 172.22.20.11

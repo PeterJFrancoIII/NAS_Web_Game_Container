@@ -45,6 +45,17 @@ static gboolean gpu_scale_requested(void) {
   return g_strcmp0(env_str("ULTRA_VIDEO_GPU_SCALE", "1"), "0") != 0;
 }
 
+static gboolean video_udp_enabled(void) {
+  return g_strcmp0(env_str("ULTRA_VIDEO_UDP", "0"), "1") == 0;
+}
+
+static gboolean wss_video_enabled(void) {
+  if (!video_udp_enabled()) {
+    return TRUE;
+  }
+  return g_strcmp0(env_str("ULTRA_WSS_VIDEO", "0"), "0") != 0;
+}
+
 #define OPUS_NATIVE_RATE 48000
 
 static gchar *audio_encoder_desc(gint audio_rate) {
@@ -194,26 +205,45 @@ static gchar *video_encoder_desc(void) {
 }
 
 static gchar *pipeline_desc(void) {
+  const gchar *display = env_str("DISPLAY", ":1");
+  gint pulse_port = env_int("PULSE_TCP_PORT", 4711);
+  gint audio_rate = env_int("ULTRA_AUDIO_RATE", 44100);
+  gchar *audio_encoder = audio_encoder_desc(audio_rate);
+  if (!audio_encoder) {
+    return NULL;
+  }
+  const gchar *audio_queue =
+      "queue max-size-buffers=12 max-size-bytes=0 max-size-time=200000000 leaky=no";
+
+  if (video_udp_enabled() && !wss_video_enabled()) {
+    g_printerr("[stream-helper] ULTRA_WSS_VIDEO=0 — audio-only WSS; WebRTC owns video capture\n");
+  } else if (video_udp_enabled()) {
+    g_printerr("[stream-helper] ULTRA_WSS_VIDEO=1 — WSS video active (WebRTC should be idle)\n");
+  }
+
+  if (!wss_video_enabled()) {
+    gchar *desc = g_strdup_printf(
+        "tcpclientsrc host=127.0.0.1 port=%d do-timestamp=true ! "
+        "rawaudioparse use-sink-caps=false format=pcm pcm-format=s16le sample-rate=%d num-channels=2 ! "
+        "audioconvert ! audio/x-raw,format=S16LE,rate=%d,channels=2 ! "
+        "%s ! %s ! "
+        "appsink name=asink emit-signals=true max-buffers=12 drop=false sync=false",
+        pulse_port, audio_rate, audio_rate, audio_encoder, audio_queue);
+    g_free(audio_encoder);
+    return desc;
+  }
+
   gchar *encoder = video_encoder_desc();
   if (!encoder) {
+    g_free(audio_encoder);
     return NULL;
   }
 
-  const gchar *display = env_str("DISPLAY", ":1");
   gint width = env_int("ULTRA_VIDEO_WIDTH", 1024);
   gint height = env_int("ULTRA_VIDEO_HEIGHT", 768);
   gint fps = env_int("ULTRA_VIDEO_FPS", 24);
-  gint audio_rate = env_int("ULTRA_AUDIO_RATE", 44100);
-  gint pulse_port = env_int("PULSE_TCP_PORT", 4711);
-  gchar *audio_encoder = audio_encoder_desc(audio_rate);
-  if (!audio_encoder) {
-    g_free(encoder);
-    return NULL;
-  }
   const gchar *video_queue =
       "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream";
-  const gchar *audio_queue =
-      "queue max-size-buffers=12 max-size-bytes=0 max-size-time=200000000 leaky=no";
 
   gchar *desc;
   if (gpu_front_active) {
@@ -378,12 +408,14 @@ int main(int argc, char *argv[]) {
 
   video_sink = gst_bin_get_by_name(GST_BIN(pipeline), "vsink");
   audio_sink = gst_bin_get_by_name(GST_BIN(pipeline), "asink");
-  if (!video_sink || !audio_sink) {
+  if (!audio_sink || (wss_video_enabled() && !video_sink)) {
     g_printerr("[stream-helper] missing appsink elements\n");
     return 1;
   }
 
-  g_signal_connect(video_sink, "new-sample", G_CALLBACK(on_video_sample), NULL);
+  if (video_sink) {
+    g_signal_connect(video_sink, "new-sample", G_CALLBACK(on_video_sample), NULL);
+  }
   g_signal_connect(audio_sink, "new-sample", G_CALLBACK(on_audio_sample), NULL);
 
   GstBus *bus = gst_element_get_bus(pipeline);
@@ -398,7 +430,9 @@ int main(int argc, char *argv[]) {
   g_main_loop_run(main_loop);
 
   gst_element_set_state(pipeline, GST_STATE_NULL);
-  gst_object_unref(video_sink);
+  if (video_sink) {
+    gst_object_unref(video_sink);
+  }
   gst_object_unref(audio_sink);
   gst_object_unref(pipeline);
   g_main_loop_unref(main_loop);

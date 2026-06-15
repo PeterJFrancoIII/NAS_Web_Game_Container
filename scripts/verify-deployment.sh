@@ -6,8 +6,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 
 COMPOSE_DIR="${COMPOSE_DIR:-/volume2/Data/App_Development/ra2-lan-party/project}"
 ENV_FILE="${ENV_FILE:-$COMPOSE_DIR/.env}"
-PLAYER1="${PLAYER1:-ra2-player-1}"
-PLAYER2="${PLAYER2:-ra2-player-2}"
+PLAYER1="${PLAYER1:-Cloud_Gaming_Player1}"
+PLAYER2="${PLAYER2:-Cloud_Gaming_Player2}"
 FAIL=0
 
 pass() {
@@ -30,7 +30,7 @@ exec_in() {
 cd "$COMPOSE_DIR"
 
 note "Container status"
-if ! run_docker ps -a --filter name=ra2-player --format 'table {{.Names}}\t{{.Status}}'; then
+if ! run_docker ps -a --filter name=Cloud_Gaming_Player --format 'table {{.Names}}\t{{.Status}}'; then
   fail "Could not query Docker"
   exit 1
 fi

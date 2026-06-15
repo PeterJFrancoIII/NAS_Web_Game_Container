@@ -44,7 +44,7 @@ x-ra2-player-env: &ra2-player-env
 services:
   ra2-player-1:
     <<: *ra2-common
-    container_name: ra2-player-1
+    container_name: ${PLAYER1_CONTAINER:-Cloud_Gaming_Player1}
     environment:
       <<: *ra2-player-env
       PLAYER_ID: "1"
@@ -68,13 +68,10 @@ services:
       - ./container/pulse:/opt/ra2/pulse:ro
       - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
       - ./container/asound.conf:/etc/asound.conf:ro
-    networks:
-      ra2_lan:
-        ipv4_address: 172.22.20.11
 
   ra2-player-2:
     <<: *ra2-common
-    container_name: ra2-player-2
+    container_name: ${PLAYER2_CONTAINER:-Cloud_Gaming_Player2}
     environment:
       <<: *ra2-player-env
       PLAYER_ID: "2"
@@ -98,9 +95,6 @@ services:
       - ./container/pulse:/opt/ra2/pulse:ro
       - ./container/websockify-tokens.cfg:/opt/ra2/websockify-tokens.cfg:ro
       - ./container/asound.conf:/etc/asound.conf:ro
-    networks:
-      ra2_lan:
-        ipv4_address: 172.22.20.12
 
 networks:
   ra2_lan:

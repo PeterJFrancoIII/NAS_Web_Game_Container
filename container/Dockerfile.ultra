@@ -75,6 +75,9 @@ COPY --chown=commander:commander container/start-stream-gateway.sh /opt/ra2/star
 COPY --chown=commander:commander container/log-video-diagnostics.sh /opt/ra2/log-video-diagnostics.sh
 COPY --chown=commander:commander container/winedbg-minidump.sh /opt/ra2/winedbg-minidump.sh
 COPY --chown=commander:commander container/ra2-stream-gateway.py /opt/ra2/ra2-stream-gateway.py
+COPY --chown=commander:commander container/webrtc-media.py /opt/ra2/webrtc-media.py
+COPY --chown=commander:commander container/webrtc-media-helper.c /opt/ra2/webrtc-media-helper.c
+COPY --chown=commander:commander container/start-webrtc.sh /opt/ra2/start-webrtc.sh
 COPY --chown=commander:commander container/healthcheck-ultra.sh /opt/ra2/healthcheck-ultra.sh
 COPY --chown=commander:commander container/entrypoint-ultra.sh /opt/ra2/entrypoint.sh
 COPY --chown=commander:commander container/supervisord.ultra.conf /opt/ra2/supervisord.conf
@@ -87,7 +90,8 @@ RUN chmod +x /opt/ra2/entrypoint.sh /opt/ra2/start-pulseaudio.sh \
       /opt/ra2/apply-ultra-display.sh /opt/ra2/switch-game-display.sh /opt/ra2/sync-game-transport.sh /opt/ra2/ensure-game-ini-links.sh \
       /opt/ra2/sync-audio-transport.sh /opt/ra2/start-stream-gateway.sh /opt/ra2/log-video-diagnostics.sh \
       /opt/ra2/winedbg-minidump.sh /opt/ra2/healthcheck-ultra.sh \
-      /opt/ra2/ra2-stream-gateway.py /opt/ra2/stream-helper \
+      /opt/ra2/ra2-stream-gateway.py /opt/ra2/webrtc-media.py /opt/ra2/start-webrtc.sh \
+      /opt/ra2/stream-helper \
     && chown commander:commander /opt/ra2/stream-helper
 
 USER commander

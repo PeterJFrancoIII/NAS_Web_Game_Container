@@ -18,6 +18,17 @@ player_http_port() {
   esac
 }
 
+player_container() {
+  case "$1" in
+    ra2-player-2) printf '%s\n' "${PLAYER2_CONTAINER:-Cloud_Gaming_Player2}" ;;
+    ra2-player-dev) printf '%s\n' "${RA2_RAM_SERVICE:-ra2-player-dev}" ;;
+    *) printf '%s\n' "${PLAYER1_CONTAINER:-Cloud_Gaming_Player1}" ;;
+  esac
+}
+
+echo "[redeploy-ultra] running WebRTC unit tests"
+sh "$SCRIPT_DIR/run-webrtc-tests.sh"
+
 echo "[redeploy-ultra] syncing project to ${HOST}:${TARGET}"
 NAS_HOST="$HOST" NAS_TARGET="$TARGET" sh "$SCRIPT_DIR/sync-to-nas.sh"
 
@@ -29,11 +40,12 @@ else
   compose_action="up -d --no-build --force-recreate"
 fi
 
-ssh "$HOST" "cd '$TARGET' && RA2_COMPOSE_ULTRA=1 sh -c '. ./scripts/lib.sh; run_compose .env ${compose_action} ${SERVICES}'"
+ssh "$HOST" "cd '$TARGET' && RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=${RA2_COMPOSE_ULTRA_UDP_HOST:-1} sh -c '. ./scripts/lib.sh; run_compose .env ${compose_action} ${SERVICES} ra2-coturn'"
 
 for service in $SERVICES; do
   echo "[redeploy-ultra] verifying ${service}"
-  ssh "$HOST" "cd '$TARGET' && sh -c '. ./scripts/lib.sh; run_docker exec ${service} sh -lc '\\''
+  container="$(player_container "$service")"
+  ssh "$HOST" "cd '$TARGET' && sh -c '. ./scripts/lib.sh; run_docker exec ${container} sh -lc '\\''
     set -eu
     test -x /opt/ra2/stream-helper || { echo \"stream-helper missing\"; exit 1; }
     pgrep -f ra2-stream-gateway.py >/dev/null || { echo \"gateway not running\"; exit 1; }

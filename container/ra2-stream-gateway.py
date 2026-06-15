@@ -15,13 +15,64 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve
 
 GATEWAY_PORT = int(os.environ.get("ULTRA_GATEWAY_PORT", "6080"))
+VIDEO_UDP = os.environ.get("ULTRA_VIDEO_UDP", "0") == "1"
+WEBRTC_SIGNAL_INTERNAL = int(os.environ.get("WEBRTC_SIGNAL_PORT", "6090"))
 TLS_CERT = os.environ.get("TLS_CERT", "/opt/ra2/tls/cert.pem")
 TLS_KEY = os.environ.get("TLS_KEY", "/opt/ra2/tls/key.pem")
 HELPER = os.environ.get("ULTRA_STREAM_HELPER", "/opt/ra2/stream-helper")
 STREAM_CPUSET = os.environ.get("ULTRA_STREAM_CPUSET", "").strip()
+
+
+def _webrtc_signal_port() -> int:
+    player = os.environ.get("PLAYER_ID", "1")
+    if player == "2":
+        return int(os.environ.get("PLAYER2_WEBRTC_SIGNAL_PORT", "6084"))
+    return int(os.environ.get("PLAYER1_WEBRTC_SIGNAL_PORT", "6083"))
+
+
+def _webrtc_ice_servers() -> list[dict]:
+    servers: list[dict] = [
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun.cloudflare.com:3478"},
+    ]
+    turn_urls = os.environ.get("WEBRTC_TURN_URLS", "").strip()
+    if not turn_urls:
+        return servers
+    turn_user = os.environ.get("WEBRTC_TURN_USERNAME", "ra2turn").strip() or "ra2turn"
+    turn_pass = os.environ.get("WEBRTC_TURN_PASSWORD", "").strip()
+    if not turn_pass:
+        return servers
+    # Static lt-cred-mech — one iceServer per URL (never bundle urls in an array).
+    turn_host = (
+        os.environ.get("WEBRTC_ICE_CANDIDATE_HOST", "").strip()
+        or os.environ.get("NAS_PUBLIC_HOSTNAME", "").strip()
+    )
+    for raw in turn_urls.split(","):
+        url = raw.strip()
+        if not url:
+            continue
+        servers.append(
+            {
+                "urls": url,
+                "username": turn_user,
+                "credential": turn_pass,
+            }
+        )
+    turns_port = os.environ.get("WEBRTC_TURNS_PORT", "5349").strip()
+    if turns_port and turn_host:
+        servers.append(
+            {
+                "urls": f"turns:{turn_host}:{turns_port}?transport=tcp",
+                "username": turn_user,
+                "credential": turn_pass,
+            }
+        )
+    return servers
 
 
 def build_helper_command() -> list[str]:
@@ -54,6 +105,12 @@ DIAGNOSTIC_DIR = Path(
 )
 INPUT_TRACE = Path(os.environ.get("ULTRA_INPUT_TRACE", str(DIAGNOSTIC_DIR / "input-events.log")))
 GATEWAY_LOG = Path(os.environ.get("ULTRA_GATEWAY_LOG", str(DIAGNOSTIC_DIR / "gateway.log")))
+WEBRTC_RUNTIME_PRESET_FILE = Path(
+    os.environ.get(
+        "WEBRTC_RUNTIME_PRESET_FILE",
+        str(DIAGNOSTIC_DIR / "webrtc-runtime-preset"),
+    )
+)
 DISPLAY = os.environ.get("DISPLAY", ":1")
 DISPLAY_ENV = Path(os.environ.get("ULTRA_DISPLAY_ENV", "/home/commander/.ra2/display.env"))
 DISPLAY_REVISION = Path(
@@ -289,6 +346,16 @@ ALLOWED_AUDIO_QUALITY = frozenset({"44100", "48000"})
 ALLOWED_AUDIO_BITRATES = frozenset({64000, 96000, 128000})
 ALLOWED_INPUT_HZ = frozenset({60, 125, 200})
 ALLOWED_AUDIO_ENCODERS = frozenset({"opus", "pcm"})
+ALLOWED_WEBRTC_LATENCY_PRESETS = frozenset({"stable", "low", "experimental"})
+STREAM_TRANSPORT_FIELDS = (
+    "videoQuality",
+    "videoCodec",
+    "videoBitrate",
+    "audioEncoder",
+    "audioQuality",
+    "audioBitrate",
+    "inputMoveHz",
+)
 AVAILABLE_CACHE: dict = {}
 FACTORY_CACHE: dict[str, bool] = {}
 H265_QSV_FACTORIES = ("qsvh265enc", "msdkh265enc")
@@ -501,11 +568,54 @@ def _audio_encoder_available(encoder: str) -> bool:
     return False
 
 
+def _default_webrtc_latency_preset() -> str:
+    if WEBRTC_RUNTIME_PRESET_FILE.is_file():
+        try:
+            runtime = WEBRTC_RUNTIME_PRESET_FILE.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            runtime = ""
+        if runtime in ALLOWED_WEBRTC_LATENCY_PRESETS:
+            return runtime
+    preset = os.environ.get("WEBRTC_LATENCY_PRESET", "low").strip().lower()
+    return preset if preset in ALLOWED_WEBRTC_LATENCY_PRESETS else "low"
+
+
+def _write_webrtc_runtime_preset(preset: str) -> None:
+    WEBRTC_RUNTIME_PRESET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WEBRTC_RUNTIME_PRESET_FILE.write_text(f"{preset.strip().lower()}\n", encoding="utf-8")
+
+
+async def _restart_webrtc_media(reason: str) -> None:
+    if not VIDEO_UDP or os.environ.get("WEBRTC_ENABLED", "0") != "1":
+        return
+    print(
+        f"[ultra-gateway] restarting webrtc-media reason={reason} "
+        f"(player {PLAYER_ID})",
+        flush=True,
+    )
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["supervisorctl", "-c", "/opt/ra2/supervisord.conf", "restart", "webrtc-media"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            print(
+                f"[ultra-gateway] webrtc-media restart failed: {detail or result.returncode}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[ultra-gateway] webrtc-media restart error: {exc}", flush=True)
+
+
 def default_settings() -> dict:
     quality = "balanced"
     preset = VIDEO_QUALITY_PRESETS[quality]
     display_w, display_h = _configured_display_dims()
-    return {
+    settings = {
         "videoQuality": quality,
         "videoCodec": os.environ.get("ULTRA_VIDEO_CODEC", "H265_10").upper(),
         "displayResolution": _format_display_resolution(display_w, display_h),
@@ -529,6 +639,9 @@ def default_settings() -> dict:
             MAX_VIDEO_FPS,
         ),
     }
+    if VIDEO_UDP:
+        settings["webrtcLatencyPreset"] = _default_webrtc_latency_preset()
+    return settings
 
 
 def get_available_options() -> dict:
@@ -580,6 +693,8 @@ def get_available_options() -> dict:
     available = dict(AVAILABLE_CACHE)
     display_w, display_h = _configured_display_dims()
     available["displayResolution"] = _format_display_resolution(display_w, display_h)
+    if VIDEO_UDP:
+        available["webrtcLatencyPreset"] = sorted(ALLOWED_WEBRTC_LATENCY_PRESETS)
     return available
 
 
@@ -764,27 +879,55 @@ def validate_settings(requested: Optional[dict]) -> dict:
         move_hz = defaults["inputMoveHz"]
     active["inputMoveHz"] = move_hz
 
+    if VIDEO_UDP:
+        preset = str(
+            requested.get("webrtcLatencyPreset", defaults.get("webrtcLatencyPreset", "low"))
+        ).strip().lower()
+        if preset not in ALLOWED_WEBRTC_LATENCY_PRESETS:
+            fallbacks.append(
+                {
+                    "field": "webrtcLatencyPreset",
+                    "requested": preset,
+                    "active": defaults.get("webrtcLatencyPreset", "low"),
+                    "reason": "unsupported WebRTC latency preset",
+                }
+            )
+            preset = defaults.get("webrtcLatencyPreset", "low")
+        active["webrtcLatencyPreset"] = preset
+
+    requested_payload = {
+        "videoQuality": requested.get("videoQuality", defaults["videoQuality"]),
+        "videoCodec": requested.get("videoCodec", defaults["videoCodec"]),
+        "videoBitrate": requested.get("videoBitrate", defaults["videoBitrate"]),
+        "audioEncoder": requested.get("audioEncoder", defaults["audioEncoder"]),
+        "audioQuality": requested.get("audioQuality", defaults["audioQuality"]),
+        "audioBitrate": requested.get("audioBitrate", defaults["audioBitrate"]),
+        "inputMoveHz": requested.get("inputMoveHz", defaults["inputMoveHz"]),
+    }
+    if VIDEO_UDP:
+        requested_payload["webrtcLatencyPreset"] = requested.get(
+            "webrtcLatencyPreset", defaults.get("webrtcLatencyPreset", "low")
+        )
+
     return {
-        "requested": {
-            "videoQuality": requested.get("videoQuality", defaults["videoQuality"]),
-            "videoCodec": requested.get("videoCodec", defaults["videoCodec"]),
-            "videoBitrate": requested.get("videoBitrate", defaults["videoBitrate"]),
-            "audioEncoder": requested.get("audioEncoder", defaults["audioEncoder"]),
-            "audioQuality": requested.get("audioQuality", defaults["audioQuality"]),
-            "audioBitrate": requested.get("audioBitrate", defaults["audioBitrate"]),
-            "inputMoveHz": requested.get("inputMoveHz", defaults["inputMoveHz"]),
-        },
+        "requested": requested_payload,
         "active": active,
         "fallbacks": fallbacks,
     }
 
 
-def build_helper_env(active: dict, width: int, height: int) -> dict:
+def build_helper_env(
+    active: dict, width: int, height: int, *, wss_video: Optional[bool] = None
+) -> dict:
     codec = active["videoCodec"]
     # H265_10 is a UI-level codec choice; the helper sees H265 plus a bit depth.
     helper_codec = "H265" if codec == "H265_10" else codec
     bit_depth = "10" if codec == "H265_10" else "8"
-    return {
+    if wss_video is None:
+        # Keep WSS video on during UDP/WebRTC negotiation so the browser has
+        # picture immediately and can fall back without a blank gap.
+        wss_video = True
+    env = {
         "ULTRA_VIDEO_CODEC": helper_codec,
         "ULTRA_VIDEO_BIT_DEPTH": bit_depth,
         "ULTRA_VIDEO_BITRATE": str(active["videoBitrate"]),
@@ -796,7 +939,11 @@ def build_helper_env(active: dict, width: int, height: int) -> dict:
         "ULTRA_AUDIO_RATE": active["audioQuality"],
         "ULTRA_AUDIO_TRANSPORT_RATE": active["audioQuality"],
         "DISPLAY": os.environ.get("DISPLAY", ":1"),
+        "ULTRA_WSS_VIDEO": "1" if wss_video else "0",
     }
+    if VIDEO_UDP:
+        env["ULTRA_VIDEO_UDP"] = "1"
+    return env
 
 
 def _clamp_int(value: object, minimum: int, maximum: int) -> int:
@@ -1176,6 +1323,7 @@ class StreamSession:
                     "active": self.active_settings,
                     "available": get_available_options(),
                     "fallbacks": self.fallbacks,
+                    "webrtcIceServers": _webrtc_ice_servers() if VIDEO_UDP else None,
                     **session_presence(),
                     "transport": {
                         "video": (
@@ -1190,6 +1338,15 @@ class StreamSession:
                             f"{self.active_settings['audioQuality']}Hz"
                         ),
                         "input": f"{self.active_settings['inputMoveHz']}Hz",
+                        **(
+                            {
+                                "webrtc": self.active_settings.get(
+                                    "webrtcLatencyPreset", "low"
+                                )
+                            }
+                            if VIDEO_UDP
+                            else {}
+                        ),
                     },
                 }
             )
@@ -1199,7 +1356,10 @@ class StreamSession:
         width, height = _configured_display_dims()
         prev_dims = (self.stream_width, self.stream_height)
         prev_env = dict(self.helper_env)
-        next_env = build_helper_env(self.active_settings, width, height)
+        wss_video = self.helper_env.get("ULTRA_WSS_VIDEO", "1") == "1"
+        next_env = build_helper_env(
+            self.active_settings, width, height, wss_video=wss_video
+        )
 
         self.known_display_dims = (width, height)
         self.native_width = width
@@ -1221,6 +1381,24 @@ class StreamSession:
             await self.stop_helper("reconfigure")
             await self.start_helper()
 
+    async def _set_video_path(self, path: str) -> None:
+        want_wss = path == "wss"
+        current_wss = self.helper_env.get("ULTRA_WSS_VIDEO", "1") == "1"
+        if want_wss == current_wss:
+            return
+        width, height = self.stream_width, self.stream_height
+        self.helper_env = build_helper_env(
+            self.active_settings, width, height, wss_video=want_wss
+        )
+        label = "wss" if want_wss else "webrtc"
+        print(
+            f"[ultra-gateway] video path -> {label} (player {PLAYER_ID})",
+            flush=True,
+        )
+        if self.stream_started:
+            await self.stop_helper("video_path")
+            await self.start_helper()
+
     async def _apply_transport_settings(
         self,
         msg: dict,
@@ -1228,6 +1406,7 @@ class StreamSession:
         restart_helper: bool,
         become_active: bool,
     ) -> None:
+        prev_active = dict(self.active_settings)
         validated = validate_settings(msg.get("settings"))
         self.requested_settings = validated["requested"]
         self.active_settings = validated["active"]
@@ -1244,8 +1423,24 @@ class StreamSession:
                     )
                 )
                 return
-        should_restart = restart_helper
+        stream_changed = any(
+            prev_active.get(field) != self.active_settings.get(field)
+            for field in STREAM_TRANSPORT_FIELDS
+        )
+        webrtc_preset = self.active_settings.get("webrtcLatencyPreset")
+        webrtc_changed = (
+            VIDEO_UDP
+            and webrtc_preset
+            and prev_active.get("webrtcLatencyPreset") != webrtc_preset
+        )
+        should_restart = restart_helper and stream_changed
         await self._sync_stream_state(restart_helper=should_restart)
+        if not self.helper or self.helper.poll() is not None:
+            await self.start_helper()
+        if VIDEO_UDP and webrtc_preset:
+            _write_webrtc_runtime_preset(webrtc_preset)
+            if webrtc_changed and self.stream_started:
+                await _restart_webrtc_media("latency_preset")
         self.stream_started = True
         reason = "reconfigure" if not become_active else "start"
         await self._send_ready(reason=reason)
@@ -1480,6 +1675,14 @@ class StreamSession:
                 become_active=False,
             )
             return
+        if msg.get("type") == "videoPath":
+            if self.role != "controller" or not self.stream_started or not VIDEO_UDP:
+                return
+            path = str(msg.get("path", "")).strip().lower()
+            if path not in {"wss", "webrtc"}:
+                return
+            await self._set_video_path(path)
+            return
         if msg.get("type") == "stop":
             if self.role != "controller":
                 return
@@ -1502,6 +1705,13 @@ class StreamSession:
 
 
 def process_request(connection, request):
+    path = request.path.split("?", 1)[0]
+    if path == "/turn-ice.json" and VIDEO_UDP:
+        payload = json.dumps({"iceServers": _webrtc_ice_servers()})
+        response = connection.respond(HTTPStatus.OK, payload)
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Cache-Control"] = "no-store"
+        return response
     served = _static_body(request.path)
     if served is None:
         return None
@@ -1512,11 +1722,47 @@ def process_request(connection, request):
     return response
 
 
-async def stream_handler(websocket) -> None:
-    if websocket.request.path not in {"/stream", "/stream/"}:
-        await websocket.close(1008, "connect to /stream")
-        return
+async def webrtc_signal_proxy(client_ws) -> None:
+    """Bridge browser WebRTC signaling on the play port to the in-container bridge."""
+    use_tls = os.environ.get("WEBRTC_SIGNAL_TLS", "0") == "1"
+    scheme = "wss" if use_tls else "ws"
+    target = f"{scheme}://127.0.0.1:{WEBRTC_SIGNAL_INTERNAL}"
+    print(f"[ultra-gateway] webrtc-signal proxy -> {target} (player {PLAYER_ID})", flush=True)
+    ssl_ctx = None
+    if use_tls:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    try:
+        async with ws_connect(target, ssl=ssl_ctx, open_timeout=10) as upstream:
+            async def forward_client() -> None:
+                async for message in client_ws:
+                    await upstream.send(message)
 
+            async def forward_upstream() -> None:
+                async for message in upstream:
+                    await client_ws.send(message)
+
+            forward_tasks = (
+                asyncio.create_task(forward_client()),
+                asyncio.create_task(forward_upstream()),
+            )
+            done, pending = await asyncio.wait(
+                forward_tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                with contextlib.suppress(Exception):
+                    await task
+    except Exception as exc:
+        print(f"[ultra-gateway] webrtc-signal proxy failed: {exc}", flush=True)
+        with contextlib.suppress(Exception):
+            await client_ws.close(1011, "webrtc signal proxy failed")
+
+
+async def stream_handler(websocket) -> None:
     session = StreamSession(websocket)
     print(f"[ultra-gateway] client connected (player {PLAYER_ID})", flush=True)
     try:
@@ -1527,6 +1773,9 @@ async def stream_handler(websocket) -> None:
                     "player": PLAYER_ID,
                     "codec": os.environ.get("ULTRA_VIDEO_CODEC", "H264"),
                     "fps": int(os.environ.get("ULTRA_VIDEO_FPS", "24")),
+                    "videoTransport": "udp" if VIDEO_UDP else "wss",
+                    "webrtcSignalPort": _webrtc_signal_port() if VIDEO_UDP else None,
+                    "webrtcIceServers": _webrtc_ice_servers() if VIDEO_UDP else None,
                     "defaults": default_settings(),
                     "available": get_available_options(),
                     "gameLauncherEnabled": GAME_LAUNCHER_ENABLED,
@@ -1576,7 +1825,21 @@ async def watch_display_revision() -> None:
             await controller._send_ready(reason="display_change")
             await controller._sync_spectators_ready(reason="display_change")
         except Exception as exc:
-            print(f"[ultra-gateway] display refresh failed: {exc}", flush=True)
+            print(f"[ultra-gateway] display refresh failed: {exc}", flush=True        )
+
+
+async def gateway_handler(websocket) -> None:
+    path = websocket.request.path.rstrip("/") or "/"
+    if path == "/webrtc-signal":
+        if not VIDEO_UDP or os.environ.get("WEBRTC_ENABLED", "0") != "1":
+            await websocket.close(1008, "UDP video disabled")
+            return
+        await webrtc_signal_proxy(websocket)
+        return
+    if path not in {"/stream"}:
+        await websocket.close(1008, "connect to /stream or /webrtc-signal")
+        return
+    await stream_handler(websocket)
 
 
 async def main() -> None:
@@ -1593,7 +1856,7 @@ async def main() -> None:
     )
 
     async with serve(
-        stream_handler,
+        gateway_handler,
         "0.0.0.0",
         GATEWAY_PORT,
         ssl=ssl_ctx,

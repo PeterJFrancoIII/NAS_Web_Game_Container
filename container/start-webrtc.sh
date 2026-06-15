@@ -22,12 +22,20 @@ export WEBRTC_VIDEO_REQUIRE_HW="${WEBRTC_VIDEO_REQUIRE_HW:-1}"
 export WEBRTC_VIDEO_KEYFRAME_SECONDS="${WEBRTC_VIDEO_KEYFRAME_SECONDS:-1}"
 export WEBRTC_VIDEO_RTP_MTU="${WEBRTC_VIDEO_RTP_MTU:-1000}"
 export WEBRTC_OFFER_WAIT_SECONDS="${WEBRTC_OFFER_WAIT_SECONDS:-30}"
+export WEBRTC_AUDIO_ENABLED="${WEBRTC_AUDIO_ENABLED:-$([ "${ULTRA_VIDEO_UDP:-0}" = "1" ] && printf 0 || printf 1)}"
 export WEBRTC_AUDIO_BITRATE="${WEBRTC_AUDIO_BITRATE:-96000}"
 export WEBRTC_AUDIO_FRAME_MS="${WEBRTC_AUDIO_FRAME_MS:-10}"
 export WEBRTC_AUDIO_RATE="${WEBRTC_AUDIO_RATE:-44100}"
 export PULSE_TCP_PORT="${PULSE_TCP_PORT:-4711}"
 export GST_VA_ALL_DRIVERS="${GST_VA_ALL_DRIVERS:-1}"
 export WEBRTC_MEDIA_HELPER="${WEBRTC_MEDIA_HELPER:-/opt/ra2/webrtc-media-helper}"
+WEBRTC_RUNTIME_PRESET_FILE="${WEBRTC_RUNTIME_PRESET_FILE:-/home/commander/ra2-logs-root/player${PLAYER_ID:-1}/webrtc-runtime-preset}"
+if [ -f "$WEBRTC_RUNTIME_PRESET_FILE" ]; then
+  runtime_preset=$(tr -d '\r\n' < "$WEBRTC_RUNTIME_PRESET_FILE")
+  if [ -n "$runtime_preset" ]; then
+    export WEBRTC_LATENCY_PRESET="$runtime_preset"
+  fi
+fi
 
 # Memory profile can tighten capture/encode defaults before latency preset applies.
 RA2_MEMORY_PROFILE="${RA2_MEMORY_PROFILE:-two-player-low}"
@@ -111,9 +119,7 @@ case "${WEBRTC_SIGNAL_TLS:-}" in
     ;;
 esac
 
-if [ "${WEBRTC_RECOMPILE_HELPER:-0}" = "1" ] \
-  && [ -f /opt/ra2/webrtc-media-helper.c ] \
-  && { [ ! -x "$WEBRTC_MEDIA_HELPER" ] || [ /opt/ra2/webrtc-media-helper.c -nt "$WEBRTC_MEDIA_HELPER" ]; }; then
+if [ "${WEBRTC_RECOMPILE_HELPER:-0}" = "1" ] && [ -f /opt/ra2/webrtc-media-helper.c ]; then
   if ! command -v gcc >/dev/null 2>&1 || ! command -v pkg-config >/dev/null 2>&1; then
     printf '[webrtc] WEBRTC_RECOMPILE_HELPER=1 but gcc/pkg-config are unavailable\n' >&2
     exit 1

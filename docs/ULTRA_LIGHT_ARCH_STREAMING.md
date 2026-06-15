@@ -1,6 +1,6 @@
 # Ultra-Light Arch Browser Streaming (Golden Master)
 
-This is the **production** RA2 streaming profile for the DS225+. See `docs/GOLDEN_MASTER.md` for the full locked descriptor.
+This is the **production** RA2 streaming profile for the DS225+. See `docs/GOLDEN_MASTER.md` and **`docs/GOLDEN_MASTER_UDP_LAN.md`** for locked descriptors.
 
 ## What runs inside the container
 
@@ -9,119 +9,66 @@ This is the **production** RA2 streaming profile for the DS225+. See `docs/GOLDE
 | PulseAudio | `game` null sink @ **48 kHz**; TCP capture |
 | Xvfb | Headless X display (480p / 720p / 1080p tiers) |
 | Openbox | Minimal window manager |
-| `ra2-stream-gateway.py` | HTTPS + WSS on port `6080` (mapped to `6081`/`6082`) |
-| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus capture |
-| Wine + RA2 | Game |
+| `ra2-stream-gateway.py` | HTTPS + WSS on port `6080`; `/webrtc-signal` proxy |
+| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus (WSS fallback) |
+| `webrtc-media.py` + helper | **WebRTC H.264 UDP video** (primary on LAN) |
+| `RA2_Coturn` | TURN relay (host network) |
+| Wine + games | RA2 / AoE2 / StarCraft |
 
-**Not running:** noVNC, x11vnc, websockify, Selkies, Wolf, Sunshine, WebRTC media.
+**Not running:** noVNC, x11vnc, websockify, Selkies, Wolf, Sunshine.
 
 ## Browser support
 
 | Browser | Support |
 |---------|---------|
-| Chromium / Chrome / Edge | **Primary** — WebCodecs H.264/HEVC + Opus + Web Audio |
+| Chromium / Chrome / Edge | **Primary** — WebCodecs + **WebRTC UDP** + Opus + Web Audio |
 | Safari | Not optimized |
 
 ## Deploy
 
 ```bash
 cd /volume2/Data/App_Development/ra2-lan-party/project
-cp .env.example .env   # set RA2_COMPOSE_ULTRA=1, serials, passwords, TLS
+cp .env.example .env   # RA2_COMPOSE_ULTRA=1, RA2_COMPOSE_ULTRA_UDP=1, RA2_COMPOSE_ULTRA_UDP_HOST=1
 sh scripts/validate-env.sh
-RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
+RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=1 sh scripts/redeploy-ultra.sh
 ```
 
-Open:
+Open (LAN — verified UDP):
 
 ```text
-https://<NAS_LAN_IP>:6081/     # player 1
-https://<NAS_LAN_IP>:6082/     # player 2
-https://peterjfrancoiii2.synology.me:6081/   # remote (forward TCP 6081/6082)
+https://192.168.0.193:6081/     # player 1 — prefer LAN IP for UDP
+https://192.168.0.193:6082/     # player 2
 ```
 
-Only ports **6081** and **6082** are required (HTTPS/WSS on the same port).
+Remote WSS works on DDNS; **remote UDP** requires router forwards for **62001–62020 UDP/TCP** and **5349 TCP**.
+
+## UDP verification (transport panel)
+
+After starting a game on LAN:
+
+- `udp video: WebRTC verified/…`
+- `webrtc rtp: N pkts` — N must increase
+- `wss video rx: M (should stop increasing)` — M should freeze
 
 ## Defaults (golden master)
 
-| Setting | Value |
-|---------|-------|
-| Display | `960x720` @ 24-bit (`RESOLUTION` × `RA2_DISPLAY_DEPTH`) |
-| In-game tiers | 640×480 / 960×720 / 1440×1080 |
-| Video | H.265 10-bit VA-API @ **24 fps**, 900 kbps |
-| Audio | Opus **48 kHz** end-to-end, 64 kbps, **20 ms** frames |
-| Client | `SETTINGS_VERSION=18` — hard-refresh after upgrades |
-
-**Enable audio:** click **Enable audio** or the connect overlay once per browser session.
-
-## Transport settings menu
-
-The browser client includes a collapsible **Transport** panel. Settings apply live over the existing WebSocket session (no reconnect).
-
-| Setting | Options |
-|---------|---------|
-| Display tier | 480p / 720p / 1080p |
-| Hardware encoder | H.265 10-bit (default), H.265 8-bit, H.264 |
-| Video quality | low / balanced / sharp |
-| Video bitrate | 300 kbps – 2.0 Mbps |
-| Audio encoder | Opus (default), PCM fallback |
-| Input polling | 60 / 125 / 200 Hz |
-
-Tune in `.env`:
-
-```bash
-RA2_COMPOSE_ULTRA=1
-WINE_VARIANT=amd64
-WINE_ARCH=win32
-RESOLUTION=960x720
-RA2_DISPLAY_DEPTH=24
-ULTRA_VIDEO_FPS=24
-ULTRA_VIDEO_CODEC=H265_10
-ULTRA_VIDEO_BITRATE=2000000
-ULTRA_INPUT_MOVE_HZ=60
-ULTRA_H265_TEST_ENABLED=1
-ULTRA_GATEWAY_TLS=1
-ULTRA_AUDIO_CODEC=opus
-ULTRA_AUDIO_BITRATE=64000
-ULTRA_AUDIO_FRAME_MS=20
-ULTRA_AUDIO_RATE=48000
-```
-
-## Audio maintenance
-
-After PulseAudio restarts or audio transport changes, Wine must reconnect:
-
-```bash
-sudo sh scripts/restart-audio-ultra.sh ra2-player-1
-```
-
-Verify Wine is feeding Pulse:
-
-```bash
-docker exec ra2-player-1 sh -lc 'PULSE_SERVER=unix:/tmp/pulse/native pactl list sink-inputs short'
-```
-
-## H.265 / HEVC
-
-`ULTRA_H265_TEST_ENABLED=1` exposes HEVC in the transport menu. Verified on DS225+ (i965): Main and Main10 `EncSlice` entrypoints. Client degrades 10-bit → 8-bit HEVC → H.264 if decode fails.
-
-Diagnostics when `ULTRA_VIDEO_DIAGNOSTICS=1`:
-
-```text
-/volume2/Data/App_Development/ra2-lan-party/logs/player1/video-diagnostics.log
-```
+See `docs/GOLDEN_MASTER.md` §2.6. Client: **`SETTINGS_VERSION=49`**, `ultra-play.js?v=81`.
 
 ## Verify
 
 ```bash
+sh scripts/run-webrtc-tests.sh
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 python3 -m pytest tests/ -q
+ssh MediaServer2Local 'cd /volume2/Data/App_Development/ra2-lan-party/project && sh scripts/probe-webrtc-turn.sh'
 ```
 
-## Rollback
+## Backup
 
 ```bash
-docker tag ra2-lan-party:ultra ra2-lan-party:ultra-prev   # before risky change
-ULTRA_VIDEO_GPU_SCALE=0   # CPU convert without rebuild
+NAS_HOST=MediaServer2Local sh scripts/backup-golden-master.sh
 ```
 
-Archived noVNC/WebRTC paths: `docs/ARCHIVED_EXPERIMENTS.md`.
+Label: **`golden-master-2026-06-udp-lan`**
+
+Archived noVNC/Moonlight paths: `docs/ARCHIVED_EXPERIMENTS.md`.

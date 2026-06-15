@@ -1,10 +1,12 @@
 # RA2 NAS Golden Master — Final Lock (June 2026)
 
-**Tag:** `golden-master-2026-06`  
+**Tag:** `golden-master-2026-06-udp-lan` (supersedes `golden-master-2026-06` for video transport)  
 **Repo:** `synology-ra2-arch/` (GitHub: `NAS_Web_Game_Container`)  
 **NAS path:** `/volume2/Data/App_Development/ra2-lan-party/project`
 
 This is the **single authoritative document** for reproducing, operating, and restoring the production ultra browser streaming stack. Supports **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War** from one container image per player.
+
+**LAN UDP video (verified June 2026):** split-protocol WebRTC video + WSS audio/control. See [`GOLDEN_MASTER_UDP_LAN.md`](GOLDEN_MASTER_UDP_LAN.md) for the locked UDP descriptor, ports, and verification checklist.
 
 Written for **low-context LLM agents** and developers with limited prior exposure to the project.
 
@@ -37,7 +39,8 @@ Written for **low-context LLM agents** and developers with limited prior exposur
 - Docker / Container Manager with `/dev/dri` passthrough
 - `RENDER_GID=937`, `VIDEO_GID=44` for VA-API render node
 - Router forwards **TCP 6081 + 6082** to NAS for remote play
-- Client: **Chromium, Chrome, or Edge** (WebCodecs + WSS required; HTTPS mandatory)
+- **LAN UDP (verified):** forward **UDP+TCP 62001–62020** and **TCP 5349** (TURNS) for remote WebRTC; LAN play works at `https://192.168.0.193:6081/` without hairpin
+- Client: **Chromium, Chrome, or Edge** (WebCodecs + WebRTC + WSS required; HTTPS mandatory)
 
 ### 1.3 CPU layout (do not change)
 
@@ -58,14 +61,14 @@ Watchdog in `run-game-session.sh` re-applies `taskset` — Wine children escape 
 | Item | Value |
 |------|-------|
 | **Image** | `ra2-lan-party:ultra` (`container/Dockerfile.ultra`) |
-| **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` |
-| **Flag** | `RA2_COMPOSE_ULTRA=1` |
-| **Containers** | `ra2-player-1`, `ra2-player-2` |
+| **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` + `compose.ultra-udp.yaml` + `compose.ultra-udp-host.yaml` |
+| **Flags** | `RA2_COMPOSE_ULTRA=1`, `RA2_COMPOSE_ULTRA_UDP=1`, `RA2_COMPOSE_ULTRA_UDP_HOST=1` |
+| **Containers** | `Cloud_Gaming_Player1`, `Cloud_Gaming_Player2`, `RA2_Coturn` |
 | **Base OS** | Arch Linux (inside container) |
 | **Wine** | Kron4ek 10.8, `amd64` package, **`win32` prefix**, multilib |
 | **Game launcher** | `GAME_LAUNCHER_ENABLED=1` (default) |
 | **Game manifest** | `config/games.json` |
-| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=47`** |
+| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=49`**, `webrtc-ice-utils.js`, `ultra-play.js?v=81` |
 
 ### 2.2 Supported games (`config/games.json`)
 
@@ -86,10 +89,12 @@ RA2 uses transport INI sync (`sync-game-transport.sh`); AoE2 and StarCraft use p
 | Openbox | Minimal WM |
 | `start-game-ultra.sh` | Launcher supervisor loop |
 | `run-game-session.sh` | Launches selected game via Wine |
-| `ra2-stream-gateway.py` | HTTPS + WSS on container port 6080 |
-| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus |
+| `ra2-stream-gateway.py` | HTTPS + WSS on container port 6080; `/webrtc-signal` proxy |
+| `stream-helper` | GStreamer VA-API H.264/HEVC + Opus (WSS fallback path) |
+| `webrtc-media.py` + helper | WebRTC H.264 UDP video (primary on LAN) |
+| `RA2_Coturn` | TURN relay (host network, TLS 5349) |
 
-**Not in hot path:** noVNC, x11vnc, websockify, WebRTC, Moonlight, Selkies.
+**Not in hot path:** noVNC, x11vnc, websockify, Moonlight, Selkies.
 
 ### 2.4 Matched two-player deployment
 
@@ -114,7 +119,9 @@ Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, image, game asset m
 5. **Transport → Switch game…** sends a new `selectGame` while connected.
 6. If controller slot is taken, client shows **Watch stream** panel — user must **click manually** (no auto-join to spectator mode).
 
-Client cache bust: `index.html` loads `ultra-play.js?v=47`. Gateway serves static files using `urlparse(path).path` so query strings do not break JS delivery.
+Client cache bust: `index.html` loads `webrtc-ice-utils.js` then `ultra-play.js?v=81`. Gateway serves static files using `urlparse(path).path` so query strings do not break JS delivery.
+
+**UDP video (LAN verified):** after ICE connects, transport must reach **`udp video: WebRTC verified/`** with rising **`webrtc rtp:`** packet counts before treating UDP as confirmed. WSS `video` messages should stop incrementing after verification.
 
 ### 2.6 Transport defaults (locked)
 
@@ -157,19 +164,24 @@ Client cache bust: `index.html` loads `ultra-play.js?v=47`. Gateway serves stati
 
 ## 3. Transport, ports, protocols, dependencies
 
-### 3.1 Production port map (TCP only — no UDP to internet)
+### 3.1 Production port map
 
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
-| **6081** | TCP HTTPS/WSS | Browser → NAS → P1 | Player 1 play page + `/stream` |
+| **6081** | TCP HTTPS/WSS | Browser → NAS → P1 | Player 1 play page + `/stream` + `/webrtc-signal` |
 | **6082** | TCP HTTPS/WSS | Browser → NAS → P2 | Player 2 play page + `/stream` |
+| **62001–62010** | UDP + TCP | Browser ↔ NAS | Player 1 WebRTC media/ICE |
+| **62011** | UDP + TCP | Browser ↔ NAS | Coturn TURN |
+| **62015–62020** | UDP | Browser ↔ NAS | Coturn relay allocation |
+| **5349** | TCP TLS | Browser ↔ NAS | TURNS (restrictive networks) |
 | 6080 | TCP (internal) | Host maps to 6081/6082 | Gateway inside container |
+| 6090 | TCP WSS (internal) | Gateway → webrtc-media | WebRTC signaling bridge |
 | 4711 | TCP (internal) | helper → Pulse | Audio capture |
 | 23921 | TCP SSH | Admin | Deploy / backup |
 
-**Multiplayer game traffic:** UDP between `172.22.20.11` ↔ `172.22.20.12` on Docker bridge — **not** forwarded to internet.
+**Multiplayer game traffic:** UDP between player bridge IPs on Docker network — **not** forwarded to internet.
 
-**Archived (do not forward):** WebRTC UDP 62001–62040, noVNC 5900, Moonlight ports — see `docs/ARCHIVED_EXPERIMENTS.md`.
+**Archived (do not forward unless experimenting):** noVNC 5900, Moonlight ports — see `docs/ARCHIVED_EXPERIMENTS.md`.
 
 ### 3.2 Wire protocol (browser ↔ gateway)
 
@@ -184,6 +196,7 @@ Single WSS connection per player: `wss://<host>:6081/stream` (or 6082).
 | `selectGame` | Pick or switch game (`game`: `ra2` \| `aoe2` \| `starcraft`) |
 | `watch` | Join as spectator (manual — user clicks Watch stream) |
 | `ping` | RTT measurement |
+| `videoPath` | Switch video transport (`wss` fallback \| `webrtc` UDP) |
 | `mousemove`, `mousedown`, `mouseup`, `wheel` | Pointer input |
 | `keydown`, `keyup`, `keyup_all` | Keyboard |
 
@@ -234,7 +247,11 @@ Video/audio use base64 in JSON (~33% overhead — known improvement area).
 | `container/game-launcher.sh` | CLI game menu (container-side) |
 | `container/secure-game-select.sh` | Validates browser game selection |
 | `container/remote-ultra/ultra-play.js` | Browser client |
-| `scripts/redeploy-ultra.sh` | Sync + recreate both players |
+| `scripts/redeploy-ultra.sh` | WebRTC tests + sync + recreate players + coturn |
+| `scripts/run-webrtc-tests.sh` | ICE unit tests (Python + Node) |
+| `scripts/probe-webrtc-turn.sh` | TURN credential probe on NAS |
+| `tests/test_webrtc_ice.py` | Server ICE expansion/sanitize tests |
+| `tests/ultra_play_ice_utils.test.mjs` | Browser ICE helper tests |
 | `scripts/restart-audio-ultra.sh` | Pulse → game → gateway |
 | `scripts/unpack-starcraft-broodwar.sh` | Stage SC disc assets on NAS |
 | `scripts/validate-env.sh` | Pre-flight `.env` |
@@ -288,14 +305,15 @@ sh scripts/ingest-assets.sh /path/to/RA2
 # AoE2 + StarCraft: unpack to paths in compose.ultra.yaml
 sh scripts/unpack-starcraft-broodwar.sh   # if using StarCraft
 
-# 4. Build + deploy both players
-RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
+# 4. Build + deploy both players (UDP golden master)
+RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=1 sh scripts/redeploy-ultra.sh
 
 # 5. Verify
+sh scripts/run-webrtc-tests.sh
 python3 -m pytest tests/ -q
 curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6081/
-curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6082/
-curl -sk -o /dev/null -w "%{http_code}\n" "https://127.0.0.1:6081/ultra-play.js?v=47"
+curl -sk -o /dev/null -w "%{http_code}\n" "https://127.0.0.1:6081/ultra-play.js?v=81"
+curl -sk https://127.0.0.1:6081/turn-ice.json | python3 -m json.tool | head
 ```
 
 **From Mac after edits:**
@@ -335,6 +353,10 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 | 21 | **Click to choose a game** dead | Gateway must strip `?v=` from static paths (`urlparse(path).path`); otherwise JS returns 426 |
 | 22 | Spectator auto-joined too fast | Removed auto `watchStream()` — user clicks **Watch stream** manually |
 | 23 | Game picker blocked on connect | Do not call `ensureDecoders()` before WebSocket opens |
+| 24 | UDP claimed but still WSS video | Confirm only after `webrtc rtp:` packets rise; see `GOLDEN_MASTER_UDP_LAN.md` |
+| 25 | mDNS ICE → 0 server candidates | Rewrite to LAN IP via `webrtc-ice-utils.js` before sanitize |
+| 26 | Coturn TLS failed | Coturn `user: 1000:1000` + TLS mount at `/opt/ra2/tls` |
+| 27 | Synology Docker UDP masquerade | `RA2_COMPOSE_ULTRA_UDP_HOST=1` for player 1 + coturn |
 
 ---
 
@@ -388,6 +410,8 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 10. Static assets: gateway strips URL query strings before filesystem lookup
 11. Spectator join requires explicit user click — no auto `watchStream()`
 12. Browser connect: show game picker before starting decoders/stream
+13. UDP video: dual ICE (LAN + public), RTP-verified before switching off WSS decode path
+14. `run-webrtc-tests.sh` must pass before ultra deploy sync
 
 ---
 
@@ -396,12 +420,12 @@ NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh
 ### 8.1 Create backup (no game files)
 
 ```bash
-# On NAS
+# On NAS — label: golden-master-2026-06-udp-lan
 cd /volume2/Data/App_Development/ra2-lan-party/project
 sh scripts/backup-golden-master.sh
 
 # From Mac
-NAS_HOST=MediaServer2 sh scripts/backup-golden-master.sh
+NAS_HOST=MediaServer2Local sh scripts/backup-golden-master.sh
 ```
 
 Output: `/volume2/Data/App_Development/ra2-lan-party/backups/golden-master-YYYYMMDD-HHMMSS/`
@@ -424,12 +448,12 @@ RA2_COMPOSE_ULTRA=1 sh scripts/redeploy-ultra.sh
 ## 9. Verification
 
 ```bash
-python3 -m pytest tests/ -q                           # expect 79 passed
+sh scripts/run-webrtc-tests.sh
+python3 -m pytest tests/ -q
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
-curl -sk -o /dev/null -w "6081=%{http_code}\n" https://peterjfrancoiii2.synology.me:6081/
-curl -sk -o /dev/null -w "6082=%{http_code}\n" https://peterjfrancoiii2.synology.me:6082/
-curl -sk -o /dev/null -w "js=%{http_code}\n" "https://peterjfrancoiii2.synology.me:6081/ultra-play.js?v=47"
-docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
+curl -sk -o /dev/null -w "6081=%{http_code}\n" https://192.168.0.193:6081/
+curl -sk -o /dev/null -w "js=%{http_code}\n" "https://192.168.0.193:6081/ultra-play.js?v=81"
+# LAN play: transport panel shows "WebRTC verified" + rising webrtc rtp pkts
 ```
 
 ---
@@ -439,6 +463,7 @@ docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
 | Doc | Use |
 |-----|-----|
 | **This file** | Authoritative golden master |
+| `GOLDEN_MASTER_UDP_LAN.md` | Locked LAN UDP WebRTC descriptor |
 | `README.md` | Repo entry point |
 | `assets-example/README.md` | Game asset staging per title |
 | `docs/ULTRA_LIGHT_ARCH_STREAMING.md` | Transport menu shorthand |
@@ -446,4 +471,4 @@ docker exec ra2-player-1 sh -lc 'pgrep -x gamemd.exe | xargs -r taskset -pc'
 | `docs/NAS_DEPLOY_STATUS.md` | Operator snapshot |
 | `docs/ARCHIVED_EXPERIMENTS.md` | Deprecated paths |
 
-**Lock date:** June 2026. Do not deploy archived compose overlays on production NAS.
+**Lock date:** 14 June 2026 (`golden-master-2026-06-udp-lan`). Do not deploy archived compose overlays on production NAS.

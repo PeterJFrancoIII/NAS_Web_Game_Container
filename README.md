@@ -1,10 +1,11 @@
 # Synology RA2 Arch LAN Party — Golden Master
 
-**Tag:** `golden-master-2026-06` · **Lock:** June 2026
+**Tag:** `golden-master-2026-06-udp-lan` · **Lock:** 14 June 2026
 
-Multi-game LAN party on Synology DS225+: **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War**, streamed to Chromium over **one HTTPS port per player** via WebCodecs + WSS.
+Multi-game LAN party on Synology DS225+: **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War**, streamed to Chromium over **one HTTPS port per player** with **LAN-verified UDP/WebRTC video** + WSS audio/control.
 
-> **Read first:** [`docs/GOLDEN_MASTER.md`](docs/GOLDEN_MASTER.md) — full replication guide for LLM agents and developers (hardware, ports, transport, multi-game launcher, bugs, benchmarks, backup).
+> **Read first:** [`docs/GOLDEN_MASTER.md`](docs/GOLDEN_MASTER.md) — full replication guide.  
+> **UDP lock:** [`docs/GOLDEN_MASTER_UDP_LAN.md`](docs/GOLDEN_MASTER_UDP_LAN.md) — split-protocol ports, verification, backup.
 
 ## Play URLs
 
@@ -28,24 +29,23 @@ Router: forward **TCP 6081 + 6082**. Hard-refresh after client updates (`Cmd+Shi
 |---|---|
 | **Host** | Synology DS225+ · Intel J4125 · 4 cores · i965 VA-API |
 | **Image** | `ra2-lan-party:ultra` |
-| **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` |
-| **Flag** | `RA2_COMPOSE_ULTRA=1` |
+| **Compose** | `compose.yaml` + `compose.https.yaml` + `compose.ultra.yaml` + `compose.ultra-udp.yaml` + `compose.ultra-udp-host.yaml` |
+| **Flags** | `RA2_COMPOSE_ULTRA=1`, `RA2_COMPOSE_ULTRA_UDP=1`, `RA2_COMPOSE_ULTRA_UDP_HOST=1` |
 | **Games** | `config/games.json` · `GAME_LAUNCHER_ENABLED=1` |
-| **Client** | `container/remote-ultra/` · `SETTINGS_VERSION=47` · `ultra-play.js?v=47` |
-| **Tests** | `python3 -m pytest tests/ -q` (79 passed) |
+| **Client** | `webrtc-ice-utils.js` + `ultra-play.js?v=81` · `SETTINGS_VERSION=49` |
+| **Tests** | `sh scripts/run-webrtc-tests.sh` · `python3 -m pytest tests/ -q` |
 
-**Production:** **Ultra Arch Browser** streaming only. **Not production:** noVNC, WebRTC, Moonlight — [`docs/ARCHIVED_EXPERIMENTS.md`](docs/ARCHIVED_EXPERIMENTS.md).
+**Production:** Ultra browser streaming with **LAN UDP WebRTC video** (verified). **Not production:** noVNC, Moonlight — [`docs/ARCHIVED_EXPERIMENTS.md`](docs/ARCHIVED_EXPERIMENTS.md).
 
 ## Architecture
 
 ```text
-Chromium  ←─ HTTPS/WSS :6081|:6082 ─→  ra2-stream-gateway.py
+Chromium  ←─ HTTPS/WSS :6081 ─→  ra2-stream-gateway.py  (audio, input, game select)
+         ←─ WebRTC UDP 62001-62010 ─→  webrtc-media (H.264 video, LAN verified)
                                               ↓
-                                    stream-helper (VA-API, cores 2–3)
+                                    stream-helper (WSS fallback encode)
                                               ↓
                                     Xvfb + Wine (core 0 or 1)
-                                              ↓
-                         game-launcher → run-game-session (RA2 / AoE2 / SC)
 ```
 
 Both players share identical config; **only serial keys and Wine prefixes differ**.
@@ -108,7 +108,7 @@ Game multiplayer UDP stays on Docker bridge `172.22.20.11` ↔ `172.22.20.12` (n
 ## Backup
 
 ```bash
-NAS_HOST=MediaServer2 sh scripts/backup-golden-master.sh
+NAS_HOST=MediaServer2Local sh scripts/backup-golden-master.sh
 ```
 
 Creates `/volume2/.../ra2-lan-party/backups/golden-master-<timestamp>/` with Docker image + project/prefixes/tls/logs. **Excludes** `assets*` and game installers.

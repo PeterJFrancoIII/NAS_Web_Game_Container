@@ -1,0 +1,18 @@
+# Synology WebRTC UDP: bypass Docker bridge source-IP masquerading (172.22.0.1).
+# Requires RA2_COMPOSE_ULTRA_UDP=1. Player 1 only — player 2 stays on bridge.
+#
+# Launch:
+#   RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=1 \
+#     docker compose --env-file .env \
+#       -f compose.yaml -f compose.https.yaml -f compose.ultra.yaml \
+#       -f compose.ultra-udp.yaml -f compose.ultra-udp-host.yaml up -d
+#
+# With host mode the gateway binds PLAYER1_HTTP_PORT (6081) on the NAS directly.
+# Router forwards stay on 192.168.0.193:6081 and 62001-62020 as today.
+
+services:
+  ra2-player-1:
+    network_mode: host
+    environment:
+      ULTRA_GATEWAY_PORT: ${PLAYER1_HTTP_PORT:-6081}
+      WEBSOCKIFY_PORT: ${PLAYER1_HTTP_PORT:-6081}
