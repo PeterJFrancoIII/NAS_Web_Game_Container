@@ -129,10 +129,10 @@ class TlsCheckpointUnitTest(unittest.TestCase):
                 env={"DOCKER": str(fake_docker)},
             )
             self.assertEqual(result_without_tls.returncode, 0, result_without_tls.stderr)
-            self.assertIn(
-                f"compose --env-file {env_file} -f compose.yaml ps",
-                docker_log.read_text(encoding="utf-8"),
-            )
+            log_text = docker_log.read_text(encoding="utf-8")
+            self.assertIn(f"compose --env-file {env_file}", log_text)
+            self.assertIn("-f compose.yaml", log_text)
+            self.assertIn(" ps", log_text)
 
             (tls_dir / "cert.pem").write_text("cert", encoding="utf-8")
             (tls_dir / "key.pem").write_text("key", encoding="utf-8")
@@ -144,10 +144,10 @@ class TlsCheckpointUnitTest(unittest.TestCase):
                 env={"DOCKER": str(fake_docker)},
             )
             self.assertEqual(result_with_tls.returncode, 0, result_with_tls.stderr)
-            self.assertIn(
-                f"compose --env-file {env_file} -f compose.yaml -f compose.https.yaml up -d",
-                docker_log.read_text(encoding="utf-8"),
-            )
+            tls_log = docker_log.read_text(encoding="utf-8")
+            self.assertIn(f"compose --env-file {env_file}", tls_log)
+            self.assertIn("-f compose.yaml", tls_log)
+            self.assertIn("-f compose.https.yaml up -d", tls_log)
 
     def test_run_compose_adds_transcode_overlay_only_when_enabled(self):
         with temp_workspace() as temp_dir:

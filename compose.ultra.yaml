@@ -41,6 +41,9 @@ x-ra2-ultra-env: &ra2-ultra-env
   GAME_LAUNCHER_ENABLED: ${GAME_LAUNCHER_ENABLED:-1}
   # In-container paths (host bind sources use *_ASSETS_HOST in compose volumes):
   AOE2_ASSETS_DIR: /home/commander/aoe2_assets
+  AOE2_PATCH_DIR: /home/commander/aoe2_patches
+  AOE2_STAGE: /home/commander/aoe2_staging
+  AOE2_10C_DATA_DIR: /home/commander/aoe2_10c_data
   SC_ASSETS_DIR: /home/commander/sc_assets
   SC_DISC_DIR: /home/commander/sc_disc
   SC_STAGE: /home/commander/sc_staging
@@ -74,6 +77,8 @@ x-ra2-ultra: &ra2-ultra
     - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
     - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
     - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+    - ./container/prepare-aoe2-session.sh:/opt/ra2/prepare-aoe2-session.sh:ro
+    - ./container/install-aoe2-10c.sh:/opt/ra2/install-aoe2-10c.sh:ro
     - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
     - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
     - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
@@ -107,6 +112,9 @@ services:
       - ${PREFIX1_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player1-win32}:/home/commander/.wine:rw
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${AOE2_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2}:/home/commander/aoe2_assets:ro
+      - ${AOE2_PATCH_HOST:-/volume2/Data/Games/1 Packed - Compressed/Age of Empires 2 II + The Conquerors + Patch 2.0a + Crack + Custom Maps (for Windows XP 7 8 8.1 10)}:/home/commander/aoe2_patches:ro
+      - ${AOE2_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2/.disc-staging}:/home/commander/aoe2_staging:ro
+      - ${AOE2_10C_DATA_HOST:-/volume2/Data/App_Development/ra2-lan-party/project/aoe2-10c-data}:/home/commander/aoe2_10c_data:ro
       - ${SC_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft}:/home/commander/sc_assets:ro
       - ${SC_DISC_HOST:-/volume2/Data/Games/1 Packed - Compressed/StarCraft & Brood War}:/home/commander/sc_disc:ro
       - ${SC_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft/.disc-staging}:/home/commander/sc_staging:ro
@@ -115,6 +123,8 @@ services:
       - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
       - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
       - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/prepare-aoe2-session.sh:/opt/ra2/prepare-aoe2-session.sh:ro
+      - ./container/install-aoe2-10c.sh:/opt/ra2/install-aoe2-10c.sh:ro
       - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
       - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
       - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
@@ -153,6 +163,9 @@ services:
       - ${PREFIX2_DIR:-/volume2/Data/App_Development/ra2-lan-party/prefixes/player2-win32}:/home/commander/.wine:rw
       - ${ASSETS_DIR:-/volume2/Data/App_Development/ra2-lan-party/assets}:/home/commander/game_assets:ro
       - ${AOE2_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2}:/home/commander/aoe2_assets:ro
+      - ${AOE2_PATCH_HOST:-/volume2/Data/Games/1 Packed - Compressed/Age of Empires 2 II + The Conquerors + Patch 2.0a + Crack + Custom Maps (for Windows XP 7 8 8.1 10)}:/home/commander/aoe2_patches:ro
+      - ${AOE2_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/Age of Empires 2/.disc-staging}:/home/commander/aoe2_staging:ro
+      - ${AOE2_10C_DATA_HOST:-/volume2/Data/App_Development/ra2-lan-party/project/aoe2-10c-data}:/home/commander/aoe2_10c_data:ro
       - ${SC_ASSETS_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft}:/home/commander/sc_assets:ro
       - ${SC_DISC_HOST:-/volume2/Data/Games/1 Packed - Compressed/StarCraft & Brood War}:/home/commander/sc_disc:ro
       - ${SC_STAGING_HOST:-/volume2/Data/Games/2 Unpacked - Ready to Play/StarCraft/.disc-staging}:/home/commander/sc_staging:ro
@@ -161,6 +174,8 @@ services:
       - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
       - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
       - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/prepare-aoe2-session.sh:/opt/ra2/prepare-aoe2-session.sh:ro
+      - ./container/install-aoe2-10c.sh:/opt/ra2/install-aoe2-10c.sh:ro
       - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
       - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
       - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro
@@ -218,6 +233,8 @@ services:
       - ./container/start-game-ultra.sh:/opt/ra2/start-game-ultra.sh:ro
       - ./container/run-game-session.sh:/opt/ra2/run-game-session.sh:ro
       - ./container/prepare-starcraft-session.sh:/opt/ra2/prepare-starcraft-session.sh:ro
+      - ./container/prepare-aoe2-session.sh:/opt/ra2/prepare-aoe2-session.sh:ro
+      - ./container/install-aoe2-10c.sh:/opt/ra2/install-aoe2-10c.sh:ro
       - ./container/game-launcher.sh:/opt/ra2/game-launcher.sh:ro
       - ./container/game-session-state.sh:/opt/ra2/game-session-state.sh:ro
       - ./container/validate-game-id.sh:/opt/ra2/validate-game-id.sh:ro

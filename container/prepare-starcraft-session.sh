@@ -131,6 +131,17 @@ install_cd_vxds
 mount_wine_cds
 update_registry
 
+ddraw_ini="/opt/ra2/config/starcraft-ddraw.ini"
+ddraw_dll="/home/commander/game_assets/ddraw.dll"
+if [ -f "$ddraw_ini" ]; then
+  cp -f "$ddraw_ini" "$GAME_DIR/ddraw.ini"
+  log "refreshed ddraw.ini from ${ddraw_ini}"
+fi
+if [ -f "$ddraw_dll" ]; then
+  cp -f "$ddraw_dll" "$GAME_DIR/ddraw.dll"
+  log "refreshed ddraw.dll from ${ddraw_dll}"
+fi
+
 if [ ! -f "$GAME_DIR/StarCraft.mpq" ] || [ ! -f "$GAME_DIR/BroodWar.mpq" ]; then
   if [ -f "/home/commander/sc_assets/StarCraft.mpq" ] && [ -f "/home/commander/sc_assets/BroodWar.mpq" ]; then
     log "using no-CD mpq files from sc_assets"

@@ -40,7 +40,7 @@ services:
       WEBRTC_ENABLED: "1"
       WEBRTC_SIGNAL_PORT: "6090"
       WEBRTC_LATENCY_PRESET: ${WEBRTC_LATENCY_PRESET:-low}
-      WEBRTC_RUNTIME_PRESET_FILE: /home/commander/ra2-logs-root/player1/webrtc-runtime-preset
+      WEBRTC_RUNTIME_CODEC_FILE: /home/commander/ra2-logs-root/player1/webrtc-runtime-codec
       WEBRTC_VIDEO_CODEC: ${WEBRTC_VIDEO_CODEC:-H264}
       WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-30}
       WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-1500000}
@@ -88,7 +88,7 @@ services:
       WEBRTC_ENABLED: "1"
       WEBRTC_SIGNAL_PORT: "6090"
       WEBRTC_LATENCY_PRESET: ${WEBRTC_LATENCY_PRESET:-low}
-      WEBRTC_RUNTIME_PRESET_FILE: /home/commander/ra2-logs-root/player2/webrtc-runtime-preset
+      WEBRTC_RUNTIME_CODEC_FILE: /home/commander/ra2-logs-root/player2/webrtc-runtime-codec
       WEBRTC_VIDEO_CODEC: ${WEBRTC_VIDEO_CODEC:-H264}
       WEBRTC_VIDEO_FPS: ${WEBRTC_VIDEO_FPS:-30}
       WEBRTC_VIDEO_BITRATE: ${WEBRTC_VIDEO_BITRATE:-1500000}

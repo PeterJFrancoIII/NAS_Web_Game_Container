@@ -49,16 +49,18 @@ if ! ctl status >/dev/null 2>&1; then
 fi
 
 current="$(read_display_dims || true)"
-if [ "$current" = "$TARGET" ]; then
-  log "display already ${TARGET}"
-  exit 0
-fi
-
-log "switching stream display ${current:-unknown} -> ${TARGET}x${DEPTH}"
 
 mkdir -p "$(dirname "$DISPLAY_ENV")" "$(dirname "$DISPLAY_REVISION")"
 printf 'RESOLUTION=%s\nRA2_DISPLAY_DEPTH=%s\n' "$TARGET" "$DEPTH" >"$DISPLAY_ENV"
 export RESOLUTION="$TARGET" RA2_DISPLAY_DEPTH="$DEPTH" DISPLAY="$DISPLAY_TARGET"
+
+if [ "$current" = "$TARGET" ]; then
+  date +%s >"$DISPLAY_REVISION"
+  log "display already ${TARGET}; refreshed stream transport revision"
+  exit 0
+fi
+
+log "switching stream display ${current:-unknown} -> ${TARGET}x${DEPTH}"
 
 wineserver -k >/dev/null 2>&1 || true
 sleep 1

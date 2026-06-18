@@ -29,19 +29,36 @@ export WEBRTC_AUDIO_RATE="${WEBRTC_AUDIO_RATE:-44100}"
 export PULSE_TCP_PORT="${PULSE_TCP_PORT:-4711}"
 export GST_VA_ALL_DRIVERS="${GST_VA_ALL_DRIVERS:-1}"
 export WEBRTC_MEDIA_HELPER="${WEBRTC_MEDIA_HELPER:-/opt/ra2/webrtc-media-helper}"
-WEBRTC_RUNTIME_PRESET_FILE="${WEBRTC_RUNTIME_PRESET_FILE:-/home/commander/ra2-logs-root/player${PLAYER_ID:-1}/webrtc-runtime-preset}"
-if [ -f "$WEBRTC_RUNTIME_PRESET_FILE" ]; then
-  runtime_preset=$(tr -d '\r\n' < "$WEBRTC_RUNTIME_PRESET_FILE")
-  if [ -n "$runtime_preset" ]; then
-    export WEBRTC_LATENCY_PRESET="$runtime_preset"
-  fi
+WEBRTC_RUNTIME_BITRATE_FILE="${WEBRTC_RUNTIME_BITRATE_FILE:-/home/commander/ra2-logs-root/player${PLAYER_ID:-1}/webrtc-runtime-bitrate}"
+WEBRTC_RUNTIME_CODEC_FILE="${WEBRTC_RUNTIME_CODEC_FILE:-/home/commander/ra2-logs-root/player${PLAYER_ID:-1}/webrtc-runtime-codec}"
+WEBRTC_RUNTIME_FPS_FILE="${WEBRTC_RUNTIME_FPS_FILE:-/home/commander/ra2-logs-root/player${PLAYER_ID:-1}/webrtc-runtime-fps}"
+export WEBRTC_VIDEO_BIT_DEPTH="${WEBRTC_VIDEO_BIT_DEPTH:-8}"
+
+DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
+if [ -f "$DISPLAY_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$DISPLAY_ENV"
 fi
+export RESOLUTION="${RESOLUTION:-1024x768}"
+DISPLAY_W="${RESOLUTION%x*}"
+DISPLAY_H="${RESOLUTION#*x}"
+case "$DISPLAY_W" in
+  ''|*[!0-9]*)
+    DISPLAY_W=1024
+    DISPLAY_H=768
+    ;;
+esac
+case "$DISPLAY_H" in
+  ''|*[!0-9]*)
+    DISPLAY_W=1024
+    DISPLAY_H=768
+    ;;
+esac
 
 # Memory profile can tighten capture/encode defaults before latency preset applies.
 RA2_MEMORY_PROFILE="${RA2_MEMORY_PROFILE:-two-player-low}"
 case "$RA2_MEMORY_PROFILE" in
   two-player-low)
-    export RESOLUTION="${RESOLUTION:-1024x768}"
     export WEBRTC_LATENCY_PRESET="${WEBRTC_LATENCY_PRESET:-stable}"
     ;;
   *)
@@ -54,44 +71,85 @@ case "$WEBRTC_LATENCY_PRESET" in
   stable)
     if [ "$RA2_MEMORY_PROFILE" = "two-player-low" ]; then
       export WEBRTC_VIDEO_CODEC="${WEBRTC_VIDEO_CODEC:-H264}"
-      export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-1024}"
-      export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-768}"
+      export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-$DISPLAY_W}"
+      export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-$DISPLAY_H}"
       export WEBRTC_VIDEO_FPS="${WEBRTC_VIDEO_FPS:-20}"
       export WEBRTC_VIDEO_BITRATE="${WEBRTC_VIDEO_BITRATE:-800000}"
     else
       export WEBRTC_VIDEO_CODEC="${WEBRTC_VIDEO_CODEC:-H264}"
-      export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-1024}"
-      export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-768}"
+      export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-$DISPLAY_W}"
+      export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-$DISPLAY_H}"
       export WEBRTC_VIDEO_FPS="${WEBRTC_VIDEO_FPS:-24}"
       export WEBRTC_VIDEO_BITRATE="${WEBRTC_VIDEO_BITRATE:-1000000}"
     fi
     ;;
   low)
     export WEBRTC_VIDEO_CODEC="${WEBRTC_VIDEO_CODEC:-H264}"
-    export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-1024}"
-    export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-768}"
+    export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-$DISPLAY_W}"
+    export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-$DISPLAY_H}"
     export WEBRTC_VIDEO_FPS="${WEBRTC_VIDEO_FPS:-30}"
     export WEBRTC_VIDEO_BITRATE="${WEBRTC_VIDEO_BITRATE:-1500000}"
     ;;
-  experimental)
-    # H265 encodes server-side but Safari did not render HEVC in this WebRTC path.
-    export WEBRTC_VIDEO_CODEC="${WEBRTC_VIDEO_CODEC:-H265}"
-    export WEBRTC_VIDEO_WIDTH="${WEBRTC_VIDEO_WIDTH:-1280}"
-    export WEBRTC_VIDEO_HEIGHT="${WEBRTC_VIDEO_HEIGHT:-720}"
-    export WEBRTC_VIDEO_FPS="${WEBRTC_VIDEO_FPS:-30}"
-    export WEBRTC_VIDEO_BITRATE="${WEBRTC_VIDEO_BITRATE:-2000000}"
-    ;;
   *)
-    printf '[webrtc] unknown WEBRTC_LATENCY_PRESET=%s (use stable|low|experimental)\n' \
+    printf '[webrtc] unknown WEBRTC_LATENCY_PRESET=%s (use stable|low)\n' \
       "$WEBRTC_LATENCY_PRESET" >&2
     exit 1
     ;;
 esac
 
-printf '[webrtc] memory profile=%s latency preset=%s codec=%s %sx%s@%sfps bitrate=%s require_hw=%s rtp_mtu=%s ice_udp=%s ice_tcp=%s\n' \
+if [ -f "$WEBRTC_RUNTIME_BITRATE_FILE" ]; then
+  runtime_bitrate=$(tr -d '\r\n' < "$WEBRTC_RUNTIME_BITRATE_FILE")
+  case "$runtime_bitrate" in
+    ''|*[!0-9]*)
+      ;;
+    *)
+      export WEBRTC_VIDEO_BITRATE="$runtime_bitrate"
+      ;;
+  esac
+fi
+
+if [ -f "$WEBRTC_RUNTIME_CODEC_FILE" ]; then
+  runtime_codec=$(tr -d '\r\n' < "$WEBRTC_RUNTIME_CODEC_FILE" | tr '[:lower:]' '[:upper:]')
+  case "$runtime_codec" in
+    H264|AVC)
+      export WEBRTC_VIDEO_CODEC=H264
+      export WEBRTC_VIDEO_BIT_DEPTH=8
+      ;;
+    H265|HEVC)
+      export WEBRTC_VIDEO_CODEC=H265
+      export WEBRTC_VIDEO_BIT_DEPTH=8
+      ;;
+    H265_10|HEVC10)
+      export WEBRTC_VIDEO_CODEC=H265
+      export WEBRTC_VIDEO_BIT_DEPTH=10
+      ;;
+  esac
+fi
+
+if [ -f "$WEBRTC_RUNTIME_FPS_FILE" ]; then
+  runtime_fps=$(tr -d '\r\n' < "$WEBRTC_RUNTIME_FPS_FILE")
+  case "$runtime_fps" in
+    20|24|30)
+      export WEBRTC_VIDEO_FPS="$runtime_fps"
+      ;;
+  esac
+fi
+
+# UI exposes only "Frame rate"; treat it as the WebRTC latency mode selector.
+case "${WEBRTC_VIDEO_FPS:-30}" in
+  20|24)
+    export WEBRTC_LATENCY_PRESET=stable
+    ;;
+  *)
+    export WEBRTC_LATENCY_PRESET=low
+    ;;
+esac
+
+printf '[webrtc] memory profile=%s latency preset=%s codec=%s bit_depth=%s %sx%s@%sfps bitrate=%s require_hw=%s rtp_mtu=%s ice_udp=%s ice_tcp=%s\n' \
   "$RA2_MEMORY_PROFILE" \
   "$WEBRTC_LATENCY_PRESET" \
   "$WEBRTC_VIDEO_CODEC" \
+  "$WEBRTC_VIDEO_BIT_DEPTH" \
   "$WEBRTC_VIDEO_WIDTH" \
   "$WEBRTC_VIDEO_HEIGHT" \
   "$WEBRTC_VIDEO_FPS" \

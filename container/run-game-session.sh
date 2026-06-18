@@ -56,6 +56,9 @@ esac
 GAME_EXE="$gameExe"
 GAME_PROCESS="$supervisedProcess"
 export WINEDLLOVERRIDES="${dllOverrides:-mscoree=d;mshtml=d}"
+if [ -n "${wineD3dConfig:-}" ]; then
+  export WINE_D3D_CONFIG="$wineD3dConfig"
+fi
 
 DISPLAY_ENV="${ULTRA_DISPLAY_ENV:-/home/commander/.ra2/display.env}"
 if [ -f "$DISPLAY_ENV" ]; then
@@ -132,7 +135,15 @@ maybe_switch_game_display() {
   fi
 }
 
+sync_game_resolution_args() {
+  [ "$GAME_ID" = "aoe2" ] || return 0
+  width="${gameWidth:-800}"
+  wineArgs="NoStartup ${width}"
+  log "AoE II launch resolution ${width}x${gameHeight:-600}"
+}
+
 maybe_switch_game_display
+sync_game_resolution_args
 
 live_game_count() {
   ps -eo stat=,comm= 2>/dev/null | awk -v name="$GAME_PROCESS" 'tolower($2) == tolower(name) && $1 !~ /^Z/ { count++ } END { print count + 0 }'
@@ -174,7 +185,17 @@ apply_language_overlay() {
     cp -f "$dll" "$GAME_DIR/LANGUAGE.DLL"
     log "applied language overlay from ${dll}"
   else
-    log "warning: no LANGUAGE.DLL in ${lang_dir}; run scripts/install-aoe2-english-language.sh"
+    for name in LANGUAGE.DLL language.dll Language.dll; do
+      if [ -f "$ASSETS_DIR/$name" ]; then
+        cp -f "$ASSETS_DIR/$name" "$GAME_DIR/LANGUAGE.DLL"
+        log "using LANGUAGE.DLL from game assets (${ASSETS_DIR}/${name})"
+        dll="$ASSETS_DIR/$name"
+        break
+      fi
+    done
+    if [ -z "$dll" ]; then
+      log "warning: no LANGUAGE.DLL in ${lang_dir} or assets; run scripts/install-aoe2-english-language.sh"
+    fi
   fi
   if [ -d "$lang_dir/History" ]; then
     rm -rf "$GAME_DIR/History" 2>/dev/null || true
@@ -203,17 +224,20 @@ prepare_game_work_dir() {
       esac
       [ -e "$GAME_DIR/$base" ] || ln -sf "$path" "$GAME_DIR/$base" 2>/dev/null || true
     done
-    ra2_ddraw="/home/commander/game_assets/ddraw.dll"
-    if [ -f "$ra2_ddraw" ]; then
-      cp -f "$ra2_ddraw" "$GAME_DIR/ddraw.dll"
-    else
-      log "warning: RA2 cnc-ddraw missing at ${ra2_ddraw}; DirectDraw may fail"
-    fi
-    ddraw_ini_src="${ddrawIni:-/opt/ra2/config/aoe2-ddraw.ini}"
-    if [ -f "$ddraw_ini_src" ]; then
-      cp -f "$ddraw_ini_src" "$GAME_DIR/ddraw.ini"
-    else
-      log "warning: ${ddraw_ini_src} missing"
+    use_cnc_ddraw="${useCncDdraw:-true}"
+    if [ "$use_cnc_ddraw" != "false" ]; then
+      ra2_ddraw="/home/commander/game_assets/ddraw.dll"
+      if [ -f "$ra2_ddraw" ]; then
+        cp -f "$ra2_ddraw" "$GAME_DIR/ddraw.dll"
+      else
+        log "warning: RA2 cnc-ddraw missing at ${ra2_ddraw}; DirectDraw may fail"
+      fi
+      ddraw_ini_src="${ddrawIni:-/opt/ra2/config/aoe2-ddraw.ini}"
+      if [ -f "$ddraw_ini_src" ]; then
+        cp -f "$ddraw_ini_src" "$GAME_DIR/ddraw.ini"
+      else
+        log "warning: ${ddraw_ini_src} missing"
+      fi
     fi
     mkdir -p "$GAME_DIR/AVI"
     apply_language_overlay
@@ -271,6 +295,13 @@ if [ "$GAME_ID" = "starcraft" ] && [ -x /opt/ra2/prepare-starcraft-session.sh ];
   }
 fi
 
+if [ "$GAME_ID" = "aoe2" ] && [ -x /opt/ra2/prepare-aoe2-session.sh ]; then
+  /bin/sh /opt/ra2/prepare-aoe2-session.sh "$GAME_DIR" || {
+    log "AoE II work-dir preparation failed"
+    exit 1
+  }
+fi
+
 if [ "$syncTransport" = "true" ] && [ -x /opt/ra2/sync-game-transport.sh ]; then
   width="${RESOLUTION%x*}"
   height="${RESOLUTION#*x}"
@@ -283,7 +314,25 @@ if [ "$ensureIniLinks" = "true" ] && [ -x /opt/ra2/ensure-game-ini-links.sh ]; t
 fi
 
 maybe_run_game_setup
-cd "$GAME_DIR"
+
+WINE_LAUNCH_CWD="$GAME_DIR"
+if [ -n "${wineLaunchCwdEnv:-}" ]; then
+  case "$wineLaunchCwdEnv" in
+    AOE2_ASSETS_DIR)
+      WINE_LAUNCH_CWD="${AOE2_ASSETS_DIR:-$assetsPath}"
+      ;;
+    SC_ASSETS_DIR)
+      WINE_LAUNCH_CWD="${SC_ASSETS_DIR:-$assetsPath}"
+      ;;
+    ASSETS_DIR)
+      WINE_LAUNCH_CWD="${ASSETS_DIR:-$assetsPath}"
+      ;;
+    *)
+      log "warning: unknown wineLaunchCwdEnv=${wineLaunchCwdEnv}; using game work dir"
+      ;;
+  esac
+fi
+cd "$WINE_LAUNCH_CWD"
 
 /bin/sh /opt/ra2/game-session-state.sh running "$GAME_ID"
 printf '%s\n' "$GAME_ID" >"$SELECTION_FILE"

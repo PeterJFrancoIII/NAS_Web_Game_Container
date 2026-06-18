@@ -7,7 +7,7 @@
   }
 
   const SETTINGS_KEY = "ra2UltraTransportSettings";
-  const SETTINGS_VERSION = 49;
+  const SETTINGS_VERSION = 74;
   const OPUS_NATIVE_RATE = 48000;
   const AUDIO_START_LEAD_S = 0.05;
   const DEFAULT_SETTINGS = {
@@ -15,7 +15,7 @@
     videoQuality: "balanced",
     videoCodec: "H265_10",
     videoBitrate: "2000000",
-    webrtcLatencyPreset: "low",
+    videoFps: "24",
     audioEncoder: "opus",
     audioQuality: "48000",
     audioBitrate: "64000",
@@ -57,8 +57,7 @@
   const wssVideoFields = document.getElementById("wssVideoFields");
   const videoCodecEl = document.getElementById("videoCodec");
   const videoBitrateEl = document.getElementById("videoBitrate");
-  const webrtcLatencyField = document.getElementById("webrtcLatencyField");
-  const webrtcLatencyPresetEl = document.getElementById("webrtcLatencyPreset");
+  const videoFpsEl = document.getElementById("videoFps");
   const audioEncoderEl = document.getElementById("audioEncoder");
   const audioBitrateEl = document.getElementById("audioBitrate");
   const audioQualityEl = document.getElementById("audioQuality");
@@ -85,7 +84,10 @@
   let webrtcIceTimeoutTimer = null;
   let webrtcEndOfCandidatesTimer = null;
   let webrtcSentServerIceCandidate = false;
+  let webrtcAnswerSent = false;
+  let webrtcEarlyTrickleActive = false;
   let webrtcUdpFailureReason = "";
+  let webrtcUdpAbandoned = false;
   let webrtcIceState = "new";
   let webrtcSession = null;
   let webrtcConnectGeneration = 0;
@@ -102,15 +104,34 @@
   const WEBRTC_ICE_EOC_DELAY_MS = 2500;
   const WEBRTC_STALL_MS = 3000;
   const WEBRTC_DISCONNECT_GRACE_MS = 4000;
+  const REMOTE_WEBRTC_DISCONNECT_GRACE_MS = 30000;
+  const REMOTE_ICE_ANSWER_DEADLINE_MS = 30000;
+  const REMOTE_ICE_TRICKLE_TIMEOUT_MS = 30000;
   const relayOnlyDiagnostic =
     new URL(location.href).searchParams.get("relayOnly") === "1";
   let webrtcGatheredCandidateLines = [];
   let webrtcForceRelayOnly = false;
+  let webrtcRelayReconnectAttempted = false;
+  let webrtcConnectScheduled = false;
+  let webrtcTrickleTimer = null;
+  let webrtcTrickleDeadline = 0;
   let webrtcStatsTimer = null;
   let webrtcMediaVerified = false;
   let webrtcInboundPackets = 0;
   let webrtcInboundBytes = 0;
+  let webrtcPreviousInboundPackets = 0;
+  let webrtcRtpGrowthStreak = 0;
+  let webrtcRtpProgressAt = 0;
   let webrtcSelectedPairSummary = "";
+  let webrtcBlackFrameStreak = 0;
+  let webrtcLastGoodVideoLuminance = 0;
+  let webrtcBlackRecoverAt = 0;
+  let webrtcBlackRecoverPackets = 0;
+  let webrtcBlackDetectCanvas = null;
+  let webrtcBlackDetectCtx = null;
+  const WEBRTC_BLACK_LUMINANCE_THRESHOLD = 0.03;
+  const WEBRTC_BLACK_RECOVER_FRAMES = 90;
+  const WEBRTC_BLACK_RECOVER_COOLDOWN_MS = 12000;
   let videoDecoder = null;
   let audioDecoder = null;
   let audioContext = null;
@@ -153,6 +174,7 @@
   let pendingSettings = false;
   let applyingTransport = false;
   let appliedSettings = null;
+  let appliedVideoTransportKey = "";
   let applyTransportTimer = null;
   let activeTransport = null;
   const TRANSPORT_APPLY_FIELDS = [
@@ -161,8 +183,8 @@
     "audioQuality",
     "inputMoveHz",
   ];
-  const WSS_VIDEO_FIELDS = ["videoQuality", "videoCodec", "videoBitrate"];
-  const UDP_VIDEO_FIELDS = ["webrtcLatencyPreset"];
+  const WSS_VIDEO_FIELDS = ["videoQuality", "videoCodec", "videoBitrate", "videoFps"];
+  const UDP_VIDEO_FIELDS = ["videoCodec", "videoBitrate", "videoFps"];
 
   function transportApplyFields() {
     if (videoTransport === "udp") {
@@ -182,7 +204,6 @@
   function updateTransportPanelVisibility() {
     const udp = videoTransport === "udp";
     if (wssVideoFields) wssVideoFields.hidden = udp;
-    if (webrtcLatencyField) webrtcLatencyField.hidden = !udp;
   }
   let serverAvailable = null;
   let serverFallbacks = [];
@@ -207,9 +228,16 @@
   let gameModeBusy = false;
   let gameModeGraceUntil = 0;
   let lastGameModeToggleAt = 0;
+  let gameModeEscapeArmedAt = 0;
+  let gameModeEscapeForwardUp = false;
+  const GAME_MODE_ESCAPE_EXIT_MS = 800;
   const STREAM_STALL_MS = 8000;
   const activeAudioSources = new Set();
   let availableGames = [];
+  /** Temporary transport-menu labels (game id → suffix after title). */
+  const GAME_MENU_STATUS = {
+    aoe2: "Not Working",
+  };
   let gameLauncherEnabled = false;
   let currentGameSession = null;
   let clientRole = "pending";
@@ -254,7 +282,7 @@
       videoQuality: videoQualityEl.value,
       videoCodec: videoCodecEl.value,
       videoBitrate: videoBitrateEl.value,
-      webrtcLatencyPreset: webrtcLatencyPresetEl ? webrtcLatencyPresetEl.value : "low",
+      videoFps: videoFpsEl ? videoFpsEl.value : "24",
       audioEncoder: audioEncoderEl.value,
       audioBitrate: audioBitrateEl.value,
       audioQuality: audioQualityEl.value,
@@ -266,14 +294,24 @@
     videoQualityEl.value = settings.videoQuality;
     videoCodecEl.value = settings.videoCodec;
     videoBitrateEl.value = settings.videoBitrate;
-    if (webrtcLatencyPresetEl && settings.webrtcLatencyPreset) {
-      webrtcLatencyPresetEl.value = settings.webrtcLatencyPreset;
+    if (videoFpsEl && settings.videoFps) {
+      videoFpsEl.value = String(settings.videoFps);
     }
     audioEncoderEl.value = settings.audioEncoder;
     audioBitrateEl.value = settings.audioBitrate;
     audioQualityEl.value = settings.audioQuality;
     inputMoveHzEl.value = settings.inputMoveHz;
     moveInterval = 1000 / Number(settings.inputMoveHz || 60);
+  }
+
+  function videoTransportKey(settings) {
+    if (!settings) return "";
+    return [
+      settings.videoQuality || "",
+      settings.videoCodec || "",
+      settings.videoBitrate || "",
+      settings.videoFps || "",
+    ].join("|");
   }
 
   function transportSettingsSnapshot(settings) {
@@ -297,7 +335,7 @@
       videoQuality: active.videoQuality,
       videoCodec: active.videoCodec,
       videoBitrate: String(active.videoBitrate),
-      webrtcLatencyPreset: active.webrtcLatencyPreset || loadSettings().webrtcLatencyPreset || "low",
+      videoFps: String(active.videoFps || streamFps),
       audioEncoder: active.audioEncoder,
       audioBitrate: String(active.audioBitrate),
       audioQuality: String(active.audioQuality),
@@ -331,14 +369,14 @@
     connectionState = "streaming";
     updateTransportStatus();
 
-    resetVideoDecoder();
-    resetAudioPlayback();
-    await ensureDecoders();
-
     ws.send(JSON.stringify({
       type: "reconfigure",
       settings,
     }));
+
+    resetVideoDecoder();
+    resetAudioPlayback();
+    void ensureDecoders();
   }
 
   function updateAvailability(available) {
@@ -361,23 +399,14 @@
     for (const option of videoBitrateEl.options) {
       option.disabled = available.videoBitrate && !available.videoBitrate.includes(Number(option.value));
     }
+    if (videoFpsEl) {
+      for (const option of videoFpsEl.options) {
+        option.disabled = available.videoFps && !available.videoFps.includes(Number(option.value));
+      }
+    }
     for (const option of audioEncoderEl.options) {
       option.disabled = !available.audioEncoder.includes(option.value);
       option.title = unavailableAudio[option.value] || "";
-    }
-    if (webrtcLatencyField && webrtcLatencyPresetEl) {
-      const presets = available.webrtcLatencyPreset || [];
-      for (const option of webrtcLatencyPresetEl.options) {
-        option.disabled = videoTransport !== "udp" || !presets.includes(option.value);
-      }
-      if (
-        videoTransport === "udp" &&
-        presets.length &&
-        !presets.includes(webrtcLatencyPresetEl.value)
-      ) {
-        webrtcLatencyPresetEl.value = presets.includes("low") ? "low" : presets[0];
-        saveSettings(currentSettingsFromUi());
-      }
     }
     updateTransportPanelVisibility();
   }
@@ -390,9 +419,11 @@
       inputMoveHzEl,
     ];
     if (videoTransport === "udp") {
-      if (webrtcLatencyPresetEl) elements.unshift(webrtcLatencyPresetEl);
+      if (videoFpsEl) elements.unshift(videoFpsEl);
+      elements.unshift(videoBitrateEl);
+      elements.unshift(videoCodecEl);
     } else {
-      elements.unshift(videoQualityEl, videoCodecEl, videoBitrateEl);
+      elements.unshift(videoQualityEl, videoCodecEl, videoBitrateEl, videoFpsEl);
     }
     return elements.filter(Boolean);
   }
@@ -411,10 +442,9 @@
     const lines = [
       "RA2 Ultra transport",
       `connection: ${connectionState}`,
-      `requested: ${settings.videoQuality}/${settings.videoCodec}@${settings.videoBitrate}bps ${settings.audioEncoder}@${settings.audioBitrate}bps/${settings.audioQuality}Hz input=${settings.inputMoveHz}Hz`,
+      `requested: ${settings.videoQuality}/${settings.videoCodec}@${settings.videoBitrate}bps/${settings.videoFps || streamFps}fps ${settings.audioEncoder}@${settings.audioBitrate}bps/${settings.audioQuality}Hz input=${settings.inputMoveHz}Hz`,
     ];
     if (videoTransport === "udp") {
-      const preset = webrtcLatencyPresetEl ? webrtcLatencyPresetEl.value : "low";
       if (stunPreflightResult === "checking") {
         lines.push("STUN: checking (browser NAT test)…");
       } else if (stunPreflightResult === "ok") {
@@ -425,7 +455,7 @@
         lines.push("STUN: unavailable · browser lacks WebRTC");
       }
       if (webrtcVideoActive && webrtcMediaVerified) {
-        lines.push(`udp video: WebRTC verified/${preset}`);
+        lines.push("udp video: WebRTC verified");
         if (webrtcSelectedPairSummary) {
           lines.push(`webrtc path: ${webrtcSelectedPairSummary}`);
         }
@@ -434,7 +464,7 @@
         );
         lines.push(`wss video rx: ${videoMessages} (should stop increasing)`);
       } else if (webrtcVideoActive) {
-        lines.push(`udp video: WebRTC/${preset} (switching…)`);
+        lines.push("udp video: WebRTC (switching…)");        
       } else if (webrtcUdpFailureReason) {
         lines.push(`udp video: failed · ${webrtcUdpFailureReason}`);
       } else if (webrtcPc && webrtcIceState && webrtcIceState !== "new") {
@@ -644,6 +674,12 @@
     }
   }
 
+  function gameMenuButtonLabel(game) {
+    const base = game.title || game.id;
+    const status = GAME_MENU_STATUS[game.id];
+    return status ? `${base} — ${status}` : base;
+  }
+
   function showGamePicker(games, session) {
     gamePickerButtons.textContent = "";
     const activeId = session && session.phase === "running" ? session.id : null;
@@ -667,7 +703,7 @@
       if (activeId && game.id === activeId) {
         btn.classList.add("active");
       }
-      btn.textContent = game.title || game.id;
+      btn.textContent = gameMenuButtonLabel(game);
       btn.dataset.gameId = game.id;
       btn.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -761,12 +797,20 @@
     }
     currentGameSession = session || currentGameSession;
     applySessionPresence(presence || {});
-    if (controllerActive && clientRole !== "controller") {
-      showWatchPanel(games, currentGameSession, presence);
-      return false;
-    }
+    // Always offer the game picker on connect. Spectator mode is explicit
+    // (Watch stream) unless selectGame is rejected server-side. Picking a game
+    // triggers server-side controller takeover after IP/session changes.
     watchPanel.classList.remove("visible");
     showGamePicker(games, currentGameSession);
+    if (controllerActive && controllerStreaming && clientRole !== "controller") {
+      const title =
+        currentGameSession && currentGameSession.title
+          ? currentGameSession.title
+          : "the active session";
+      setStatus(
+        `Another player is streaming ${title}. Select a game to take control, or use Watch stream.`,
+      );
+    }
     return false;
   }
 
@@ -892,6 +936,12 @@
         stunPreflightResult === "unsupported")
     ) {
       return Promise.resolve(stunPreflightResult === "ok");
+    }
+    if (!force && isRemotePlayPage() && hasConfiguredTurnServers()) {
+      stunPreflightResult = "ok";
+      stunPreflightDetail = "skipped on remote (TURN from turn-ice.json)";
+      updateTransportStatus();
+      return Promise.resolve(true);
     }
     if (!window.RTCPeerConnection) {
       stunPreflightResult = "unsupported";
@@ -1032,14 +1082,32 @@
       const remoteType = remote?.candidateType || "?";
       webrtcSelectedPairSummary = `${localType}/${protocol} → ${remoteType}`;
     }
-    if (inbound) {
-      webrtcInboundPackets = Number(inbound.packetsReceived || 0);
-      webrtcInboundBytes = Number(inbound.bytesReceived || 0);
+    const packets = Number(inbound?.packetsReceived || 0);
+    const framesDecoded = Number(inbound?.framesDecoded || 0);
+    const framesReceived = Number(inbound?.framesReceived || 0);
+    const rtp = Ice.isRtpSustained(
+      webrtcPreviousInboundPackets,
+      packets,
+      webrtcRtpGrowthStreak,
+      { minStreak: isRemotePlayPage() ? 2 : 1, minPackets: isRemotePlayPage() ? 12 : 6 },
+    );
+    webrtcRtpGrowthStreak = rtp.growthStreak;
+    if (packets > webrtcPreviousInboundPackets) {
+      webrtcRtpProgressAt = performance.now();
+      if (webrtcVideoActive && webrtcDisconnectTimer) {
+        clearWebRtcDisconnectTimer();
+      }
     }
-    const verified =
-      webrtcInboundPackets > 0 ||
-      Number(inbound?.framesDecoded || 0) > 0 ||
-      Number(inbound?.framesReceived || 0) > 0;
+    webrtcPreviousInboundPackets = packets;
+    webrtcInboundPackets = packets;
+    webrtcInboundBytes = Number(inbound?.bytesReceived || 0);
+    const verified = Ice.isUdpMediaVerified({
+      isRemote: isRemotePlayPage(),
+      framesDecoded,
+      framesReceived,
+      packets,
+      rtpSustained: rtp.sustained,
+    });
     if (verified) webrtcMediaVerified = true;
     return verified;
   }
@@ -1092,6 +1160,7 @@
     if (!pc) return;
     clearWebRtcStatsTimer();
     pc.addEventListener("icecandidateerror", (event) => {
+      const detail = `${event.errorText || "unknown"} (code ${event.errorCode}) ${event.url || ""}`;
       console.warn("[ultra-play] icecandidateerror", {
         url: event.url,
         errorCode: event.errorCode,
@@ -1099,9 +1168,30 @@
         address: event.address,
         port: event.port,
       });
+      if (isRemotePlayPage() && /^(turn|turns):/i.test(String(event.url || ""))) {
+        webrtcUdpFailureReason = detail;
+      }
     });
     webrtcStatsTimer = window.setInterval(() => {
       logSelectedPair(pc).catch(() => {});
+      if (webrtcVideoActive && webrtcPc) {
+        void refreshWebRtcMediaStats(webrtcPc).then((ok) => {
+          if (!ok && webrtcVideoActive) {
+            const rtpGrowing =
+              webrtcRtpProgressAt > 0 &&
+              performance.now() - webrtcRtpProgressAt <
+                Ice.stallGraceMs(isRemotePlayPage(), 3000, 6000);
+            if (
+              !rtpGrowing &&
+              webrtcRtpProgressAt > 0 &&
+              performance.now() - webrtcRtpProgressAt >
+                Ice.stallGraceMs(isRemotePlayPage(), 8000, 15000)
+            ) {
+              fallbackFromWebRtcVideo("UDP RTP stalled — using browser stream fallback");
+            }
+          }
+        });
+      }
     }, 2000);
     if (relayOnlyDiagnostic) {
       console.info("[ultra-play] relay-only diagnostic mode (?relayOnly=1)");
@@ -1149,19 +1239,35 @@
     return Ice.isLanHostname(location.hostname);
   }
 
+  function isRemotePlayPage() {
+    return Ice.isRemotePlayPage(location.hostname);
+  }
+
   function rewriteTurnUrlsForLan(servers) {
     return Ice.rewriteTurnUrlsForLan(servers, location.hostname);
   }
 
+  function orderIceServersForRemote(servers) {
+    return Ice.orderIceServersForRemote(servers, location.hostname);
+  }
+
   function applyWebRtcIceServers(servers) {
     if (!Array.isArray(servers) || !servers.length) return;
-    serverWebRtcIceServers = normalizeIceServers(rewriteTurnUrlsForLan(servers));
+    const incoming = normalizeIceServers(
+      orderIceServersForRemote(rewriteTurnUrlsForLan(servers)),
+    );
+    const incomingTurn = incoming.filter((e) => isTurnIceEntry(e));
+    if (isRemotePlayPage() && !incomingTurn.length) {
+      console.warn("[ultra-play] ignoring signaling ICE without TURN credentials on remote");
+      return;
+    }
+    serverWebRtcIceServers = incoming;
     const turnCount = serverWebRtcIceServers.filter((e) => isTurnIceEntry(e)).length;
-    const turnWithCreds = serverWebRtcIceServers.filter((e) => isTurnIceEntry(e)).length;
     console.info("[ultra-play] ICE servers", {
       total: serverWebRtcIceServers.length,
       turn: turnCount,
-      turnWithCreds,
+      turnWithCreds: turnCount,
+      firstUrl: serverWebRtcIceServers[0]?.urls || "",
     });
   }
 
@@ -1188,7 +1294,12 @@
   }
 
   function webrtcIceServers() {
-    return webrtcIceServerPresets()[0];
+    const servers = webrtcIceServerPresets()[0];
+    if (shouldUseRelayIcePolicy()) {
+      const turnOnly = Ice.iceServersForRelayPlay(servers);
+      if (turnOnly.length) return turnOnly;
+    }
+    return servers;
   }
 
   function hasConfiguredTurnServers() {
@@ -1196,7 +1307,70 @@
     return servers.some((entry) => isTurnIceEntry(entry));
   }
 
+  function shouldUseRelayIcePolicy() {
+    return Ice.shouldUseRelayIcePolicy({
+      relayOnlyDiagnostic,
+      webrtcForceRelayOnly,
+      preferRelayOnRemote: false,
+      hasTurnServers: hasConfiguredTurnServers(),
+    });
+  }
+
+  function fallbackReasonAllowsRelayRetry(reason) {
+    return Ice.fallbackReasonAllowsRelayRetry(reason);
+  }
+
+  function remoteIceTrickleInProgress() {
+    return Boolean(
+      isRemotePlayPage() &&
+        (webrtcEarlyTrickleActive || webrtcTrickleTimer || (webrtcAnswerSent && !webrtcSentServerIceCandidate)),
+    );
+  }
+
+  function remotePlayIceServers() {
+    const ordered = orderIceServersForRemote(serverWebRtcIceServers || [], location.hostname);
+    const turn = Ice.turnServersForRemotePlay(ordered);
+    if (turn.length) return turn;
+    const all = serverWebRtcIceServers || [];
+    return all.length ? all : webrtcIceServerPresets()[0];
+  }
+
   function createWebRtcPeerConnection(options = {}) {
+    const relayOnly = shouldUseRelayIcePolicy();
+    if (relayOnly) {
+      const iceServers = webrtcIceServers().filter((entry) => entry.username && entry.credential);
+      if (!iceServers.length) {
+        throw new Error("TURN servers with credentials required for remote relay ICE");
+      }
+      console.info("[ultra-play] RTCPeerConnection relay-only", {
+        iceCount: iceServers.length,
+        urls: iceServers.map((entry) => entry.urls),
+      });
+      return new RTCPeerConnection({
+        iceServers,
+        iceTransportPolicy: "relay",
+        bundlePolicy: "max-bundle",
+        ...options,
+      });
+    }
+    if (isRemotePlayPage()) {
+      const iceServers = remotePlayIceServers();
+      const turnEntries = iceServers.filter((entry) => isTurnIceEntry(entry));
+      if (!turnEntries.length) {
+        throw new Error("TURN servers not loaded — turn-ice.json missing credentials");
+      }
+      console.info("[ultra-play] RTCPeerConnection remote TURN relay", {
+        iceCount: iceServers.length,
+        turnCount: turnEntries.length,
+        urls: turnEntries.map((entry) => entry.urls),
+      });
+      return new RTCPeerConnection({
+        iceServers,
+        iceTransportPolicy: "relay",
+        bundlePolicy: "max-bundle",
+        ...options,
+      });
+    }
     const presets = webrtcIceServerPresets();
     let lastError = null;
     for (let presetIndex = 0; presetIndex < presets.length; presetIndex += 1) {
@@ -1204,8 +1378,7 @@
       try {
         const pc = new RTCPeerConnection({
           iceServers,
-          iceTransportPolicy:
-            relayOnlyDiagnostic || webrtcForceRelayOnly ? "relay" : "all",
+          iceTransportPolicy: shouldUseRelayIcePolicy() ? "relay" : "all",
           bundlePolicy: "max-bundle",
           ...options,
         });
@@ -1215,7 +1388,8 @@
           iceCount: iceServers.length,
           turnCount: turnEntries.length,
           turnWithCreds: turnEntries.filter((e) => e.username && e.credential).length,
-          relayOnly: relayOnlyDiagnostic,
+          relayOnly: shouldUseRelayIcePolicy(),
+          remotePlay: isRemotePlayPage(),
         });
         return pc;
       } catch (error) {
@@ -1285,6 +1459,9 @@
   async function finalizeAnswerSdpForServer(pc) {
     let sdp = pc.localDescription?.sdp || "";
     if (!sdpHasUsableLocalIce(sdp)) {
+      sdp = Ice.embedCandidateLinesInSdp(sdp, webrtcGatheredCandidateLines);
+    }
+    if (!sdpHasUsableLocalIce(sdp)) {
       const hostIp = await discoverClientLanIp(pc);
       if (hostIp) {
         sdp = replaceMdnsWithIpInSdp(sdp, hostIp);
@@ -1293,7 +1470,25 @@
       }
     }
     if (!sdpHasUsableLocalIce(sdp)) {
+      const injected = await injectLocalIceFromStats(pc);
+      if (sdpHasUsableLocalIce(injected.sdp)) {
+        sdp = injected.sdp;
+        if (sdp !== pc.localDescription?.sdp) {
+          await pc.setLocalDescription({ type: "answer", sdp });
+        }
+      }
+    }
+    if (
+      !Ice.hasUsableIce({
+        sdp,
+        gatheredLines: webrtcGatheredCandidateLines,
+      })
+    ) {
       throw new Error("no reachable ICE candidate for server (mDNS-only browser)");
+    }
+    if (!sdpHasUsableLocalIce(sdp)) {
+      sdp = Ice.embedCandidateLinesInSdp(sdp, webrtcGatheredCandidateLines);
+      await pc.setLocalDescription({ type: "answer", sdp });
     }
     return sanitizeAnswerSdpForServer(sdp);
   }
@@ -1339,9 +1534,47 @@
     return { sdp, candidates };
   }
 
+  function hasUsableLocalIceNow(pc) {
+    return Ice.hasUsableIce({
+      sdp: pc?.localDescription?.sdp || "",
+      gatheredLines: webrtcGatheredCandidateLines,
+    });
+  }
+
+  async function mergeStatCandidatesIntoGathered(pc) {
+    const statCandidates = await extractUsableCandidatesFromStats(pc);
+    for (const line of statCandidates) {
+      if (!webrtcGatheredCandidateLines.includes(line)) {
+        webrtcGatheredCandidateLines.push(line);
+      }
+    }
+    return statCandidates;
+  }
+
+  function hasRelayIceNow(pc) {
+    return (
+      Ice.sdpHasRelayIce(pc?.localDescription?.sdp || "") ||
+      Ice.gatheredLinesHaveRelay(webrtcGatheredCandidateLines)
+    );
+  }
+
+  async function waitForRemoteRelayCandidate(pc, timeoutMs = 20000) {
+    if (hasRelayIceNow(pc)) return true;
+    setSessionStatus("UDP video: allocating TURN relay…");
+    const gotRelay = await waitForRelayInSdp(pc, timeoutMs);
+    if (gotRelay || hasRelayIceNow(pc)) return true;
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      await mergeStatCandidatesIntoGathered(pc);
+      if (hasRelayIceNow(pc)) return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    }
+    return hasRelayIceNow(pc);
+  }
+
   function waitForUsableLocalIce(pc, timeoutMs = 20000) {
-    const checkSdp = () => sdpHasUsableLocalIce(pc.localDescription?.sdp || "");
-    if (checkSdp()) return Promise.resolve(true);
+    const check = () => hasUsableLocalIceNow(pc);
+    if (check()) return Promise.resolve(true);
     return new Promise((resolve) => {
       let settled = false;
       const finish = (ok) => {
@@ -1352,19 +1585,116 @@
         window.clearTimeout(timer);
         resolve(ok);
       };
-      const check = () => {
-        if (checkSdp()) finish(true);
-        else if (pc.iceGatheringState === "complete") finish(checkSdp());
+      const onIce = (event) => {
+        if (event?.candidate?.candidate) {
+          webrtcGatheredCandidateLines.push(event.candidate.candidate);
+        }
+        if (check()) finish(true);
+        else if (pc.iceGatheringState === "complete") finish(check());
       };
-      const onIce = () => check();
-      const onGather = () => check();
+      const onGather = () => {
+        if (pc.iceGatheringState === "complete") finish(check());
+      };
       pc.addEventListener("icecandidate", onIce);
       pc.addEventListener("icegatheringstatechange", onGather);
-      const timer = window.setTimeout(() => finish(checkSdp()), timeoutMs);
+      const timer = window.setTimeout(() => finish(check()), timeoutMs);
     });
   }
 
-  async function buildWebRtcAnswerSdp(pc) {
+  function waitForRelayInSdp(pc, timeoutMs = 25000) {
+    const checkRelay = () => hasRelayIceNow(pc);
+    if (checkRelay()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        pc.removeEventListener("icecandidate", onIce);
+        pc.removeEventListener("icegatheringstatechange", onGather);
+        window.clearTimeout(timer);
+        resolve(ok);
+      };
+      const onIce = (event) => {
+        if (event?.candidate?.candidate) {
+          webrtcGatheredCandidateLines.push(event.candidate.candidate);
+        }
+        if (checkRelay()) finish(true);
+        else if (pc.iceGatheringState === "complete") finish(checkRelay());
+      };
+      const onGather = () => {
+        if (pc.iceGatheringState === "complete") finish(checkRelay());
+      };
+      pc.addEventListener("icecandidate", onIce);
+      pc.addEventListener("icegatheringstatechange", onGather);
+      const timer = window.setTimeout(() => finish(checkRelay()), timeoutMs);
+    });
+  }
+
+  function signalingSocketActive() {
+    return Boolean(webrtcSignalSocket && webrtcSignalSocket.readyState === WebSocket.OPEN);
+  }
+
+  function signalingSocketBusy() {
+    return Boolean(
+      webrtcSignalSocket &&
+        (webrtcSignalSocket.readyState === WebSocket.CONNECTING ||
+          webrtcSignalSocket.readyState === WebSocket.OPEN),
+    );
+  }
+
+  async function closeWebRtcSignalingSocket() {
+    const sock = webrtcSignalSocket;
+    if (!sock) return;
+    webrtcSignalSocket = null;
+    sock.onopen = null;
+    sock.onmessage = null;
+    sock.onerror = null;
+    sock.onclose = null;
+    if (sock.readyState === WebSocket.CLOSED) return;
+    await new Promise((resolve) => {
+      sock.addEventListener("close", resolve, { once: true });
+      sock.close();
+    });
+  }
+
+  async function gatherIceBeforeRemoteAnswer(pc) {
+    const deadlineMs = REMOTE_ICE_ANSWER_DEADLINE_MS;
+    setSessionStatus("UDP video: gathering ICE for answer…");
+    if (isRemotePlayPage() && hasConfiguredTurnServers()) {
+      const gotRelay = await waitForRemoteRelayCandidate(pc, deadlineMs);
+      if (!gotRelay) {
+        console.warn("[ultra-play] no TURN relay after", deadlineMs, "ms gather");
+      }
+    } else if (shouldUseRelayIcePolicy()) {
+      await waitForRelayInSdp(pc, deadlineMs);
+    }
+    if (!hasUsableLocalIceNow(pc)) {
+      await waitForUsableLocalIce(pc, deadlineMs);
+    }
+    await mergeStatCandidatesIntoGathered(pc);
+    await waitForLocalIceGathering(pc, 3000);
+  }
+
+  async function answerSdpForRemote(pc) {
+    await mergeStatCandidatesIntoGathered(pc);
+    let sdp = Ice.buildFastAnswerSdp(pc.localDescription?.sdp || "", webrtcGatheredCandidateLines);
+    if (Ice.hasUsableIce({ sdp, gatheredLines: webrtcGatheredCandidateLines })) {
+      try {
+        sdp = await finalizeAnswerSdpForServer(pc);
+      } catch (error) {
+        console.warn("[ultra-play] remote answer finalize", error);
+        sdp = sanitizeAnswerSdpForServer(
+          Ice.embedCandidateLinesInSdp(pc.localDescription?.sdp || sdp, webrtcGatheredCandidateLines),
+        );
+      }
+    } else {
+      console.warn("[ultra-play] remote answer without usable ICE yet — trickle will follow");
+    }
+    return sdp;
+  }
+
+  async function buildWebRtcAnswerSdp(pc, options = {}) {
+    const earlyTrickle = options.earlyTrickle !== false;
     const answer = await pc.createAnswer({
       offerToReceiveVideo: true,
       offerToReceiveAudio: false,
@@ -1372,8 +1702,37 @@
     await pc.setLocalDescription(answer);
     setSessionStatus("UDP video: gathering ICE (waiting for STUN/TURN)…");
     updateTransportStatus();
+
+    if (earlyTrickle) {
+      if (isRemotePlayPage()) {
+        await gatherIceBeforeRemoteAnswer(pc);
+        const sdp = await answerSdpForRemote(pc);
+        console.info("[ultra-play] answer ICE (remote)", summarizeSdpIce(sdp));
+        return sdp;
+      }
+      let sdp = "";
+      try {
+        sdp = await finalizeAnswerSdpForServer(pc);
+      } catch (error) {
+        sdp = sanitizeAnswerSdpForServer(pc.localDescription?.sdp || "");
+        if (!hasUsableLocalIceNow(pc)) {
+          console.warn("[ultra-play] LAN early answer without usable ICE yet — trickle will follow", error);
+        }
+      }
+      console.info("[ultra-play] answer ICE (early trickle)", summarizeSdpIce(sdp));
+      return sdp;
+    }
+
     const gatherMs = hasConfiguredTurnServers() ? 20000 : WEBRTC_ICE_GATHER_TIMEOUT_MS;
     await waitForUsableLocalIce(pc, gatherMs);
+    if (
+      (webrtcForceRelayOnly || relayOnlyDiagnostic) &&
+      hasConfiguredTurnServers() &&
+      !hasRelayIceNow(pc)
+    ) {
+      setSessionStatus("UDP video: waiting for TURN relay…");
+      await waitForRelayInSdp(pc, gatherMs);
+    }
     await waitForLocalIceGathering(pc, 3000);
     const sdp = await finalizeAnswerSdpForServer(pc);
     const hasSrflx = /\btyp srflx\b/.test(sdp);
@@ -1396,6 +1755,133 @@
       setSessionStatus("UDP video: no srflx in answer — STUN blocked (TURN not configured)");
     }
     return sdp;
+  }
+
+  function sendTrickleCandidateLine(candidate, sent, meta = {}) {
+    if (!candidate || sent.has(candidate)) return;
+    if (!shouldSendLocalIceCandidateLine(candidate)) return;
+    if (
+      sendLocalIcePayload({
+        type: "ice",
+        candidate,
+        sdpMid: meta.sdpMid ?? "0",
+        sdpMLineIndex: meta.sdpMLineIndex ?? 0,
+      })
+    ) {
+      sent.add(candidate);
+    }
+  }
+
+  async function waitForUsefulIceTrickle(pc, timeoutMs = 20000) {
+    const sent = new Set();
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      if (webrtcSentServerIceCandidate) return true;
+      for (const candidate of webrtcGatheredCandidateLines) {
+        sendTrickleCandidateLine(candidate, sent);
+      }
+      const statCandidates = await extractUsableCandidatesFromStats(pc);
+      for (const candidate of statCandidates) {
+        sendTrickleCandidateLine(candidate, sent);
+      }
+      for (const payload of webrtcPendingLocalCandidates.splice(0)) {
+        sendTrickleCandidateLine(payload.candidate, sent);
+      }
+      if (webrtcSentServerIceCandidate) return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    }
+    return webrtcSentServerIceCandidate;
+  }
+
+  function flushUsableIceTrickle(pc, sent = new Set()) {
+    const sdp = pc?.localDescription?.sdp || "";
+    for (const candidate of localCandidateLinesFromSdp(sdp)) {
+      sendTrickleCandidateLine(candidate, sent);
+    }
+    for (const candidate of webrtcGatheredCandidateLines) {
+      sendTrickleCandidateLine(candidate, sent);
+    }
+    return sent;
+  }
+
+  async function flushUsableIceTrickleFromStats(pc, sent = new Set()) {
+    const statCandidates = await extractUsableCandidatesFromStats(pc);
+    for (const candidate of statCandidates) {
+      sendTrickleCandidateLine(candidate, sent);
+    }
+    for (const payload of webrtcPendingLocalCandidates.splice(0)) {
+      sendTrickleCandidateLine(payload.candidate, sent);
+    }
+    return sent;
+  }
+
+  function clearWebRtcTrickleTimer() {
+    if (webrtcTrickleTimer) {
+      window.clearInterval(webrtcTrickleTimer);
+      webrtcTrickleTimer = null;
+    }
+    webrtcTrickleDeadline = 0;
+  }
+
+  function startWebRtcTrickleLoop(pc) {
+    clearWebRtcTrickleTimer();
+    webrtcTrickleDeadline = performance.now() + REMOTE_ICE_TRICKLE_TIMEOUT_MS;
+    const tick = async () => {
+      if (!webrtcSignalSocket || webrtcSignalSocket.readyState !== WebSocket.OPEN || !pc) {
+        clearWebRtcTrickleTimer();
+        return;
+      }
+      flushUsableIceTrickle(pc);
+      await flushUsableIceTrickleFromStats(pc);
+      if (webrtcSentServerIceCandidate) {
+        webrtcEarlyTrickleActive = false;
+        sendWebRtcEndOfCandidates(0);
+        clearWebRtcTrickleTimer();
+        setSessionStatus("UDP video: TURN relay sent — negotiating…");
+        updateTransportStatus();
+        return;
+      }
+      if (performance.now() > webrtcTrickleDeadline) {
+        clearWebRtcTrickleTimer();
+        const detail = webrtcUdpFailureReason || "no TURN relay candidate (VPN may block UDP 62011)";
+        fallbackFromWebRtcVideo(`UDP signaling failed: ${detail}`, {
+          allowRelayRetry: Ice.fallbackReasonAllowsRelayRetry(detail),
+        });
+      }
+    };
+    void tick();
+    webrtcTrickleTimer = window.setInterval(() => {
+      void tick();
+    }, 1500);
+  }
+
+  async function completeIceTrickleAfterAnswer(pc, initialAnswerSdp) {
+    let sent = flushUsableIceTrickle(pc);
+    await flushUsableIceTrickleFromStats(pc, sent);
+    if (!webrtcSentServerIceCandidate) {
+      setSessionStatus("UDP video: sending TURN relay candidates…");
+      await waitForUsefulIceTrickle(pc, isRemotePlayPage() ? REMOTE_ICE_TRICKLE_TIMEOUT_MS : 12000);
+    }
+    if (!webrtcSentServerIceCandidate && isRemotePlayPage() && hasConfiguredTurnServers()) {
+      await waitForRelayInSdp(pc, 12000);
+      sent = flushUsableIceTrickle(pc);
+      await flushUsableIceTrickleFromStats(pc, sent);
+      if (!webrtcSentServerIceCandidate) {
+        await waitForUsefulIceTrickle(pc, 12000);
+      }
+    }
+    const iceSummary = summarizeSdpIce(initialAnswerSdp);
+    console.info("[ultra-play] trickle ICE complete (sync)", {
+      ...iceSummary,
+      sent: sent.size,
+      usefulSent: webrtcSentServerIceCandidate,
+      remotePlay: isRemotePlayPage(),
+    });
+    if (!Ice.shouldSendEndOfCandidates(webrtcSentServerIceCandidate)) {
+      throw new Error("no usable ICE candidate reached server (trickle timeout)");
+    }
+    sendWebRtcEndOfCandidates(0);
+    updateTransportStatus();
   }
 
   function clearWebRtcEndOfCandidatesTimer() {
@@ -1434,16 +1920,21 @@
     if (!webrtcSignalSocket || webrtcSignalSocket.readyState !== WebSocket.OPEN) {
       return false;
     }
-    if (!webrtcRemoteDescriptionSet) {
+    if (!webrtcRemoteDescriptionSet || !webrtcAnswerSent) {
       webrtcPendingLocalCandidates.push(payload);
       return true;
     }
+    console.info("[ultra-play] client ICE → server", String(payload.candidate || "").slice(0, 96));
     webrtcSignalSocket.send(JSON.stringify(payload));
     return true;
   }
 
   function sendWebRtcEndOfCandidates(mlineIndex = 0) {
     clearWebRtcEndOfCandidatesTimer();
+    if (!Ice.shouldSendEndOfCandidates(webrtcSentServerIceCandidate)) {
+      console.warn("[ultra-play] refusing empty end-of-candidates");
+      return;
+    }
     if (!webrtcSignalSocket || webrtcSignalSocket.readyState !== WebSocket.OPEN) return;
     webrtcSignalSocket.send(
       JSON.stringify({ type: "ice", candidate: "", sdpMLineIndex: mlineIndex, complete: true }),
@@ -1451,6 +1942,14 @@
   }
 
   function scheduleWebRtcEndOfCandidates(mlineIndex = 0) {
+    if (
+      !Ice.shouldScheduleTrickleEndOfCandidates({
+        earlyTrickleActive: webrtcEarlyTrickleActive,
+        answerSent: webrtcAnswerSent,
+      })
+    ) {
+      return;
+    }
     clearWebRtcEndOfCandidatesTimer();
     const delay = webrtcSentServerIceCandidate ? 0 : WEBRTC_ICE_EOC_DELAY_MS;
     webrtcEndOfCandidatesTimer = window.setTimeout(() => {
@@ -1489,22 +1988,118 @@
     ws.send(JSON.stringify({ type: "videoPath", path }));
   }
 
+  function resetWebRtcBlackFrameRecovery() {
+    webrtcBlackFrameStreak = 0;
+    webrtcLastGoodVideoLuminance = 0;
+    webrtcBlackRecoverAt = 0;
+    webrtcBlackRecoverPackets = 0;
+  }
+
+  function sampleWebRtcVideoLuminance(videoEl) {
+    if (!videoEl?.videoWidth || !videoEl?.videoHeight) return 0;
+    if (!webrtcBlackDetectCanvas) {
+      webrtcBlackDetectCanvas = document.createElement("canvas");
+      webrtcBlackDetectCanvas.width = 16;
+      webrtcBlackDetectCanvas.height = 16;
+      webrtcBlackDetectCtx = webrtcBlackDetectCanvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+    }
+    if (!webrtcBlackDetectCtx) return 0;
+    webrtcBlackDetectCtx.drawImage(videoEl, 0, 0, 16, 16);
+    const data = webrtcBlackDetectCtx.getImageData(0, 0, 16, 16).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += data[i] + data[i + 1] + data[i + 2];
+    }
+    return sum / (data.length / 4) / 3 / 255;
+  }
+
+  function maybeRecoverWebRtcBlackVideo(videoEl) {
+    if (!webrtcVideoActive || !webrtcMediaVerified || webrtcUdpAbandoned) return;
+    const lum = sampleWebRtcVideoLuminance(videoEl);
+    if (lum >= 0.08) {
+      webrtcLastGoodVideoLuminance = lum;
+      webrtcBlackFrameStreak = 0;
+      return;
+    }
+    if (webrtcLastGoodVideoLuminance < 0.08) return;
+    if (lum >= WEBRTC_BLACK_LUMINANCE_THRESHOLD) {
+      webrtcBlackFrameStreak = 0;
+      return;
+    }
+    webrtcBlackFrameStreak += 1;
+    if (webrtcBlackFrameStreak < WEBRTC_BLACK_RECOVER_FRAMES) return;
+    const now = performance.now();
+    if (now - webrtcBlackRecoverAt < WEBRTC_BLACK_RECOVER_COOLDOWN_MS) return;
+    if (webrtcInboundPackets <= webrtcBlackRecoverPackets) return;
+    webrtcBlackRecoverAt = now;
+    webrtcBlackRecoverPackets = webrtcInboundPackets;
+    webrtcBlackFrameStreak = 0;
+    console.warn("[ultra-play] WebRTC video went black with live RTP — reconnecting");
+    setSessionStatus("UDP video black — recovering…");
+    stopWebRtcVideo();
+    void connectWebRtcVideo();
+  }
+
   function confirmWebRtcVideo() {
     if (webrtcVideoActive) return;
     if (!webrtcMediaVerified) return;
     clearWebRtcConfirmTimer();
+    if (webrtcSession?.failTimer) {
+      window.clearTimeout(webrtcSession.failTimer);
+      webrtcSession.failTimer = null;
+    }
     webrtcVideoActive = true;
     webrtcUdpFailureReason = "";
+    resetWebRtcBlackFrameRecovery();
     sendVideoPath("webrtc");
     connectionState = "decoding";
     setSessionStatus("Video: UDP/WebRTC verified");
   }
 
-  function fallbackFromWebRtcVideo(reason) {
+  function fallbackFromWebRtcVideo(reason, options = {}) {
+    if (
+      Ice.shouldAttemptRemoteRelayRetry({
+        allowRelayRetry: options.allowRelayRetry,
+        reason,
+        relayReconnectAttempted: webrtcRelayReconnectAttempted,
+        relayOnlyDiagnostic,
+        isRemotePlayPage: isRemotePlayPage(),
+        hasTurnServers: hasConfiguredTurnServers(),
+      })
+    ) {
+      webrtcRelayReconnectAttempted = true;
+      console.warn("[ultra-play] remote UDP failed — relay-only retry", reason);
+      setSessionStatus("UDP video: retrying via TURN relay…");
+      clearWebRtcConfirmTimer();
+      clearWebRtcDisconnectTimer();
+      clearWebRtcIceTimeoutTimer();
+      clearWebRtcEndOfCandidatesTimer();
+      clearWebRtcTrickleTimer();
+      clearWebRtcStatsTimer();
+      webrtcSession = null;
+      webrtcVideoActive = false;
+      webrtcMediaVerified = false;
+      webrtcConnectPromise = null;
+      webrtcForceRelayOnly = true;
+      void (async () => {
+        await closeWebRtcSignalingSocket();
+        stopWebRtcVideo();
+        try {
+          await connectWebRtcVideo({ relayRetry: true });
+        } finally {
+          webrtcForceRelayOnly = false;
+        }
+      })();
+      return;
+    }
+    webrtcUdpAbandoned = true;
     clearWebRtcConfirmTimer();
     clearWebRtcDisconnectTimer();
     clearWebRtcIceTimeoutTimer();
     clearWebRtcEndOfCandidatesTimer();
+    clearWebRtcTrickleTimer();
     clearWebRtcStatsTimer();
     webrtcSession = null;
     if (reason) {
@@ -1517,6 +2112,9 @@
     webrtcMediaVerified = false;
     webrtcInboundPackets = 0;
     webrtcInboundBytes = 0;
+    webrtcPreviousInboundPackets = 0;
+    webrtcRtpGrowthStreak = 0;
+    webrtcRtpProgressAt = 0;
     webrtcSelectedPairSummary = "";
     webrtcConnectPromise = null;
     webrtcLastMediaTime = 0;
@@ -1541,6 +2139,8 @@
     webrtcPendingLocalCandidates = [];
     webrtcPendingRemoteCandidates = [];
     webrtcSentServerIceCandidate = false;
+    webrtcAnswerSent = false;
+    webrtcEarlyTrickleActive = false;
     if (reason) {
       setSessionStatus(reason);
     }
@@ -1553,19 +2153,27 @@
     updateTransportStatus();
   }
 
-  function stopWebRtcVideo() {
+  function stopWebRtcVideo(options = {}) {
+    const preserveConnectPromise = options.preserveConnectPromise === true;
     clearWebRtcConfirmTimer();
     clearWebRtcDisconnectTimer();
     clearWebRtcIceTimeoutTimer();
     clearWebRtcEndOfCandidatesTimer();
+    clearWebRtcTrickleTimer();
     clearWebRtcStatsTimer();
     webrtcIceState = "new";
     webrtcVideoActive = false;
     webrtcMediaVerified = false;
     webrtcInboundPackets = 0;
     webrtcInboundBytes = 0;
+    webrtcPreviousInboundPackets = 0;
+    webrtcRtpGrowthStreak = 0;
+    webrtcRtpProgressAt = 0;
     webrtcSelectedPairSummary = "";
-    webrtcConnectPromise = null;
+    resetWebRtcBlackFrameRecovery();
+    if (!preserveConnectPromise) {
+      webrtcConnectPromise = null;
+    }
     webrtcLastMediaTime = 0;
     webrtcLastMediaAdvanceAt = 0;
     if (webrtcDrawHandle) {
@@ -1585,6 +2193,8 @@
     webrtcPendingLocalCandidates = [];
     webrtcPendingRemoteCandidates = [];
     webrtcSentServerIceCandidate = false;
+    webrtcAnswerSent = false;
+    webrtcEarlyTrickleActive = false;
     webrtcSession = null;
     if (webrtcVideoEl) {
       webrtcVideoEl.srcObject = null;
@@ -1614,11 +2224,20 @@
 
   function noteWebRtcMediaProgress(videoEl) {
     const mediaTime = videoEl.currentTime;
+    const rtpGrowing =
+      webrtcRtpProgressAt > 0 &&
+      performance.now() - webrtcRtpProgressAt <
+        Ice.stallGraceMs(isRemotePlayPage(), 2000, 4000);
     if (mediaTime <= webrtcLastMediaTime + 0.0005) {
       if (
         webrtcVideoActive &&
         webrtcLastMediaAdvanceAt &&
-        performance.now() - webrtcLastMediaAdvanceAt > WEBRTC_STALL_MS
+        Ice.shouldFallbackForStall({
+          lastProgressAt: webrtcLastMediaAdvanceAt,
+          now: performance.now(),
+          stallMs: Ice.stallGraceMs(isRemotePlayPage(), WEBRTC_STALL_MS, 12000),
+          rtpGrowing,
+        })
       ) {
         fallbackFromWebRtcVideo("UDP video stalled — using browser stream fallback");
       }
@@ -1626,9 +2245,8 @@
     }
     webrtcLastMediaTime = mediaTime;
     webrtcLastMediaAdvanceAt = performance.now();
-    webrtcMediaVerified = true;
     if (!webrtcVideoActive) {
-      confirmWebRtcVideo();
+      tryConfirmWebRtcVideo();
     }
     return true;
   }
@@ -1646,6 +2264,7 @@
       if (!webrtcVideoActive) return;
       // Keep mouse/input mapped to server stream size — do not retarget coords to WebRTC encode size.
       ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+      maybeRecoverWebRtcBlackVideo(videoEl);
       framesDecoded += 1;
       lastVideoFrameAt = performance.now();
       updateTransportStatus();
@@ -1677,68 +2296,89 @@
     return webrtcSignalChain;
   }
 
-  async function handleWebRtcSignalMessage(raw) {
-    const data = JSON.parse(raw);
-    if (data.type === "offer") {
-      if (!webrtcPc && webrtcSession && webrtcSession.setupPeerConnection) {
-        webrtcSession.setupPeerConnection();
+  function resetWebRtcPeerForRelayRetry() {
+    if (webrtcPc) {
+      webrtcPc.close();
+      webrtcPc = null;
+    }
+    webrtcRemoteDescriptionSet = false;
+    webrtcPendingLocalCandidates = [];
+    webrtcPendingRemoteCandidates = [];
+    webrtcSentServerIceCandidate = false;
+    webrtcAnswerSent = false;
+    webrtcEarlyTrickleActive = false;
+    resetWebRtcLocalIceStats();
+    webrtcGatheredCandidateLines = [];
+  }
+
+  async function applyWebRtcOfferMessage(data) {
+    if (isRemotePlayPage()) {
+      await refreshTurnIceServersFromServer();
+      if (!hasConfiguredTurnServers()) {
+        throw new Error("TURN servers unavailable (turn-ice.json)");
       }
-      if (!webrtcPc) {
-        throw new Error("WebRTC peer connection unavailable");
+    }
+    if (!webrtcPc && webrtcSession && webrtcSession.setupPeerConnection) {
+      await webrtcSession.setupPeerConnection();
+    }
+    if (!webrtcPc) {
+      throw new Error("WebRTC peer connection unavailable");
+    }
+    await webrtcPc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+    webrtcRemoteDescriptionSet = true;
+    await flushWebRtcRemoteCandidates();
+    webrtcEarlyTrickleActive = true;
+    let answerSdp;
+    try {
+      answerSdp = await buildWebRtcAnswerSdp(webrtcPc, { earlyTrickle: true });
+    } catch (firstError) {
+      if (!hasConfiguredTurnServers() || webrtcForceRelayOnly || relayOnlyDiagnostic) {
+        throw firstError;
       }
-      await webrtcPc.setRemoteDescription({ type: "offer", sdp: data.sdp });
-      webrtcRemoteDescriptionSet = true;
-      await flushWebRtcRemoteCandidates();
-      let answerSdp;
+      console.warn("[ultra-play] retrying offer with TURN relay-only ICE", firstError);
+      const offerSdp = data.sdp;
+      resetWebRtcPeerForRelayRetry();
+      webrtcForceRelayOnly = true;
+      if (webrtcSession?.setupPeerConnection) {
+        await webrtcSession.setupPeerConnection();
+      }
+      if (!webrtcPc) throw firstError;
       try {
-        answerSdp = await buildWebRtcAnswerSdp(webrtcPc);
-      } catch (firstError) {
-        if (!hasConfiguredTurnServers()) throw firstError;
-        console.warn("[ultra-play] retrying with TURN relay-only ICE", firstError);
-        const offerSdp = data.sdp;
-        if (webrtcPc) {
-          webrtcPc.close();
-          webrtcPc = null;
-        }
-        webrtcForceRelayOnly = true;
-        if (webrtcSession?.setupPeerConnection) {
-          webrtcSession.setupPeerConnection();
-        }
-        webrtcForceRelayOnly = false;
-        if (!webrtcPc) throw firstError;
         await webrtcPc.setRemoteDescription({ type: "offer", sdp: offerSdp });
         webrtcRemoteDescriptionSet = true;
         await flushWebRtcRemoteCandidates();
-        answerSdp = await buildWebRtcAnswerSdp(webrtcPc);
+        answerSdp = await buildWebRtcAnswerSdp(webrtcPc, { earlyTrickle: true });
+      } finally {
+        webrtcForceRelayOnly = false;
       }
-      webrtcSignalSocket.send(JSON.stringify({ type: "answer", sdp: answerSdp }));
-      const trickleLines = localCandidateLinesFromSdp(answerSdp);
-      for (const candidate of trickleLines) {
-        sendLocalIcePayload({
-          type: "ice",
-          candidate,
-          sdpMid: "0",
-          sdpMLineIndex: 0,
-        });
-      }
-      const statCandidates = await extractUsableCandidatesFromStats(webrtcPc);
-      for (const candidate of statCandidates) {
-        if (trickleLines.includes(candidate)) continue;
-        sendLocalIcePayload({
-          type: "ice",
-          candidate,
-          sdpMid: "0",
-          sdpMLineIndex: 0,
-        });
-      }
-      for (const payload of webrtcPendingLocalCandidates.splice(0)) {
-        sendLocalIcePayload(payload);
-      }
-      if (webrtcSentServerIceCandidate) {
-        sendWebRtcEndOfCandidates(0);
-      } else {
-        scheduleWebRtcEndOfCandidates(0);
-      }
+    }
+    if (!webrtcSignalSocket || webrtcSignalSocket.readyState !== WebSocket.OPEN) {
+      throw new Error("UDP signaling socket closed before answer");
+    }
+    if (isRemotePlayPage() && hasConfiguredTurnServers() && !hasRelayIceNow(webrtcPc)) {
+      throw new Error("no TURN relay candidate (check icecandidateerror in console)");
+    }
+    webrtcSignalSocket.send(JSON.stringify({ type: "answer", sdp: answerSdp }));
+    webrtcAnswerSent = true;
+    for (const payload of webrtcPendingLocalCandidates.splice(0)) {
+      sendLocalIcePayload(payload);
+    }
+    console.info("[ultra-play] answer sent — trickling ICE", summarizeSdpIce(answerSdp));
+    setSessionStatus("UDP video: answer sent, trickling ICE…");
+    let sent = flushUsableIceTrickle(webrtcPc);
+    await flushUsableIceTrickleFromStats(webrtcPc, sent);
+    if (isRemotePlayPage()) {
+      startWebRtcTrickleLoop(webrtcPc);
+      return;
+    }
+    webrtcEarlyTrickleActive = false;
+    await completeIceTrickleAfterAnswer(webrtcPc, answerSdp);
+  }
+
+  async function handleWebRtcSignalMessage(raw) {
+    const data = JSON.parse(raw);
+    if (data.type === "offer") {
+      await applyWebRtcOfferMessage(data);
       return;
     }
     if (data.type === "ice") {
@@ -1760,25 +2400,56 @@
         webrtcPendingRemoteCandidates.push(candidate);
         return;
       }
-      await webrtcPc.addIceCandidate(candidate);
+      try {
+        await webrtcPc.addIceCandidate(candidate);
+      } catch (error) {
+        console.warn("webrtc addIceCandidate remote", error);
+      }
       return;
     }
   }
 
-  function connectWebRtcVideo() {
+  function connectWebRtcVideo(options = {}) {
     if (videoTransport !== "udp" || !window.RTCPeerConnection) {
       return Promise.resolve(false);
     }
+    const relayRetry = options.relayRetry === true;
+    if (!relayRetry && webrtcUdpAbandoned) {
+      return Promise.resolve(false);
+    }
+    if (!relayRetry && (signalingSocketBusy() || webrtcConnectPromise)) {
+      if (webrtcConnectPromise) return webrtcConnectPromise;
+      return Promise.resolve(true);
+    }
     if (webrtcConnectPromise) return webrtcConnectPromise;
+    if (!relayRetry) {
+      webrtcRelayReconnectAttempted = false;
+    }
     const generation = ++webrtcConnectGeneration;
-    void runStunPreflight();
     webrtcConnectPromise = (async () => {
       await refreshTurnIceServersFromServer();
+      if (isRemotePlayPage() && !hasConfiguredTurnServers()) {
+        setSessionStatus("UDP video: loading TURN servers…");
+        await refreshTurnIceServersFromServer();
+      }
+      if (isRemotePlayPage() && !hasConfiguredTurnServers()) {
+        setSessionStatus("UDP video: TURN unavailable (turn-ice.json)");
+        return false;
+      }
+      void runStunPreflight();
+      if (isRemotePlayPage() && hasConfiguredTurnServers()) {
+        console.info(
+          "[ultra-play] remote play — ICE",
+          shouldUseRelayIcePolicy() ? "relay (TURN via DDNS)" : "all",
+        );
+      }
       return new Promise((resolve) => {
-      stopWebRtcVideo();
+      stopWebRtcVideo({ preserveConnectPromise: true });
       resetWebRtcLocalIceStats();
       webrtcGatheredCandidateLines = [];
       webrtcSentServerIceCandidate = false;
+      webrtcAnswerSent = false;
+      webrtcEarlyTrickleActive = false;
       webrtcUdpFailureReason = "";
       clearWebRtcEndOfCandidatesTimer();
       const videoEl = ensureWebRtcVideoEl();
@@ -1786,6 +2457,7 @@
       const finish = (ok) => {
         if (settled) return;
         settled = true;
+        webrtcConnectPromise = null;
         resolve(ok);
       };
       const failTimer = window.setTimeout(() => {
@@ -1805,15 +2477,27 @@
         }
       }, WEBRTC_ICE_TIMEOUT_MS + 5000);
 
-      function setupPeerConnection() {
+      async function setupPeerConnection() {
         if (webrtcPc) return;
+        if (isRemotePlayPage()) {
+          await refreshTurnIceServersFromServer();
+          if (!hasConfiguredTurnServers()) {
+            window.clearTimeout(failTimer);
+            fallbackFromWebRtcVideo("TURN servers unavailable (turn-ice.json)", {
+              allowRelayRetry: false,
+            });
+            finish(false);
+            return;
+          }
+        }
         try {
-          webrtcPc = createWebRtcPeerConnection({ iceCandidatePoolSize: 10 });
+          webrtcPc = createWebRtcPeerConnection();
           attachWebRtcPeerDiagnostics(webrtcPc);
         } catch (error) {
           window.clearTimeout(failTimer);
           fallbackFromWebRtcVideo(
             `WebRTC unavailable: ${webRtcErrorDetail(error, "browser blocked peer connection")}`,
+            { allowRelayRetry: false },
           );
           finish(false);
           return;
@@ -1839,18 +2523,44 @@
           }
           if (state === "failed") {
             window.clearTimeout(failTimer);
+            if (webrtcVideoActive) return;
+            if (remoteIceTrickleInProgress()) {
+              console.warn("[ultra-play] connection failed during remote trickle — waiting for TURN relay");
+              return;
+            }
             fallbackFromWebRtcVideo("WebRTC connection failed — using browser stream fallback");
             finish(false);
             return;
           }
           if (state === "disconnected" && webrtcVideoActive) {
+            const ice = webrtcPc ? webrtcPc.iceConnectionState : "";
+            if (ice === "connected" || ice === "completed") {
+              return;
+            }
             clearWebRtcDisconnectTimer();
+            const graceMs = Ice.disconnectGraceMs(
+              isRemotePlayPage(),
+              WEBRTC_DISCONNECT_GRACE_MS,
+              REMOTE_WEBRTC_DISCONNECT_GRACE_MS,
+            );
             webrtcDisconnectTimer = window.setTimeout(() => {
-              if (webrtcPc && webrtcPc.connectionState === "disconnected") {
-                fallbackFromWebRtcVideo("UDP video lost — using browser stream fallback");
-                finish(false);
+              if (!webrtcPc || webrtcPc.connectionState !== "disconnected") return;
+              const rtpRecent =
+                webrtcRtpProgressAt > 0 &&
+                performance.now() - webrtcRtpProgressAt <
+                  Ice.stallGraceMs(isRemotePlayPage(), 5000, 15000);
+              if (
+                !Ice.shouldFallbackOnConnectionDisconnect({
+                  videoActive: webrtcVideoActive,
+                  iceConnectionState: webrtcPc.iceConnectionState,
+                  rtpRecent,
+                })
+              ) {
+                return;
               }
-            }, WEBRTC_DISCONNECT_GRACE_MS);
+              fallbackFromWebRtcVideo("UDP video lost — using browser stream fallback");
+              finish(false);
+            }, graceMs);
           }
         };
         webrtcPc.oniceconnectionstatechange = () => {
@@ -1858,12 +2568,14 @@
           webrtcIceState = iceState || "new";
           updateTransportStatus();
           if (iceState === "checking") {
-            setSessionStatus("UDP video: ICE checking…");
-            scheduleWebRtcIceTimeout(() => {
-              window.clearTimeout(failTimer);
-              fallbackFromWebRtcVideo("ICE checking timed out — using browser stream fallback");
-              finish(false);
-            });
+            if (!remoteIceTrickleInProgress()) {
+              setSessionStatus("UDP video: ICE checking…");
+              scheduleWebRtcIceTimeout(() => {
+                window.clearTimeout(failTimer);
+                fallbackFromWebRtcVideo("ICE checking timed out — using browser stream fallback");
+                finish(false);
+              });
+            }
             return;
           }
           if (iceState === "connected" || iceState === "completed") {
@@ -1883,63 +2595,96 @@
           }
           if (iceState === "failed") {
             window.clearTimeout(failTimer);
-            const detail = webrtcLocalIceStats.srflx
+            if (webrtcVideoActive) {
+              clearWebRtcDisconnectTimer();
+              const graceMs = Ice.disconnectGraceMs(
+                isRemotePlayPage(),
+                WEBRTC_DISCONNECT_GRACE_MS,
+                REMOTE_WEBRTC_DISCONNECT_GRACE_MS,
+              );
+              webrtcDisconnectTimer = window.setTimeout(() => {
+                if (!webrtcPc || webrtcPc.iceConnectionState !== "failed") return;
+                const rtpRecent =
+                  webrtcRtpProgressAt > 0 &&
+                  performance.now() - webrtcRtpProgressAt <
+                    Ice.stallGraceMs(isRemotePlayPage(), 5000, 15000);
+                if (rtpRecent) return;
+                fallbackFromWebRtcVideo("UDP ICE lost — using browser stream fallback");
+                finish(false);
+              }, graceMs);
+              return;
+            }
+            if (remoteIceTrickleInProgress()) {
+              console.warn("[ultra-play] ICE failed during remote trickle — waiting for TURN relay");
+              return;
+            }
+            const detail = webrtcLocalIceStats.relay
               ? "connectivity checks failed"
-              : "no srflx candidate — outbound STUN may be blocked";
+              : webrtcLocalIceStats.srflx
+                ? "connectivity checks failed"
+                : hasConfiguredTurnServers()
+                  ? "no TURN relay candidate (check icecandidateerror)"
+                  : "no srflx candidate — outbound STUN may be blocked";
             fallbackFromWebRtcVideo(`ICE failed (${detail})`);
             finish(false);
           }
         };
         webrtcPc.onicecandidate = (event) => {
+          if (event.candidate?.candidate) {
+            webrtcGatheredCandidateLines.push(event.candidate.candidate);
+            sendLocalIcePayload({
+              type: "ice",
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+            });
+            return;
+          }
           if (!webrtcSignalSocket || webrtcSignalSocket.readyState !== WebSocket.OPEN) {
             return;
           }
-          if (event.candidate?.candidate) {
-            webrtcGatheredCandidateLines.push(event.candidate.candidate);
-          }
-          if (!event.candidate) {
-            scheduleWebRtcEndOfCandidates(event.candidate?.sdpMLineIndex ?? 0);
-            return;
-          }
-          sendLocalIcePayload({
-            type: "ice",
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex,
-          });
+          scheduleWebRtcEndOfCandidates(event.candidate?.sdpMLineIndex ?? 0);
         };
       }
 
       webrtcSession = { finish, failTimer, videoEl, setupPeerConnection };
 
-      webrtcSignalSocket = new WebSocket(webrtcSignalUrl());
-      webrtcSignalSocket.onopen = () => {
+      const signalSocket = new WebSocket(webrtcSignalUrl());
+      webrtcSignalSocket = signalSocket;
+      signalSocket.onopen = () => {
         setSessionStatus("Connecting UDP video…");
       };
-      webrtcSignalSocket.onmessage = (event) => {
+      signalSocket.onmessage = (event) => {
         if (generation !== webrtcConnectGeneration) return;
         enqueueWebRtcSignalMessage(event.data).catch((error) => {
           console.error("webrtc signal", error);
           const detail = error && error.message ? error.message : String(error);
           setSessionStatus(`UDP video signaling failed: ${detail}`);
           window.clearTimeout(failTimer);
-          fallbackFromWebRtcVideo(`UDP signaling failed: ${detail}`);
+          fallbackFromWebRtcVideo(`UDP signaling failed: ${detail}`, {
+            allowRelayRetry: Ice.fallbackReasonAllowsRelayRetry(detail),
+          });
           finish(false);
         });
       };
-      webrtcSignalSocket.onerror = () => {
+      signalSocket.onerror = () => {
         if (generation !== webrtcConnectGeneration) return;
+        if (signalSocket !== webrtcSignalSocket) return;
         window.clearTimeout(failTimer);
-        fallbackFromWebRtcVideo("UDP video signaling unavailable — using browser stream fallback");
+        fallbackFromWebRtcVideo("UDP video signaling unavailable — using browser stream fallback", {
+          allowRelayRetry: false,
+        });
         finish(false);
       };
-      webrtcSignalSocket.onclose = (event) => {
+      signalSocket.onclose = (event) => {
         if (generation !== webrtcConnectGeneration) return;
+        if (signalSocket !== webrtcSignalSocket) return;
+        if (event && (event.code === 4001 || event.code === 4000)) return;
         if (webrtcVideoActive) return;
         window.clearTimeout(failTimer);
         if (connectionState === "streaming" || connectionState === "decoding") {
           const why = event && event.code === 4001 ? "another WebRTC tab is open" : "signaling socket closed";
-          fallbackFromWebRtcVideo(`UDP signaling lost (${why})`);
+          fallbackFromWebRtcVideo(`UDP signaling lost (${why})`, { allowRelayRetry: false });
         }
         finish(false);
       };
@@ -2169,6 +2914,7 @@
       nativeWidth = msg.nativeWidth;
       nativeHeight = msg.nativeHeight;
     }
+    let videoTransportChanged = false;
     if (msg.active) {
       activeVideoCodec = msg.active.videoCodec || "H264";
       activeAudioBitrate = Number(msg.active.audioBitrate || 64000);
@@ -2184,16 +2930,32 @@
         saveSettings(currentSettingsFromUi());
         appliedSettings = transportSettingsSnapshot(currentSettingsFromUi());
       }
+      const nextVideoKey = videoTransportKey(msg.active);
+      videoTransportChanged = Boolean(nextVideoKey && nextVideoKey !== appliedVideoTransportKey);
+      if (nextVideoKey) {
+        appliedVideoTransportKey = nextVideoKey;
+      }
     }
     resetVideoDecoder();
     resetAudioPlayback();
     await ensureDecoders();
-    if (videoTransport === "udp") {
-      if (!msg.reason || msg.reason === "start" || msg.reason === "reconfigure") {
-        window.setTimeout(() => {
+    if (videoTransport === "udp" && !webrtcUdpAbandoned) {
+      if (msg.reason === "reconfigure") {
+        if (videoTransportChanged) {
+          stopWebRtcVideo();
           void connectWebRtcVideo();
-        }, 500);
+        }
+        return;
       }
+      if (msg.reason && msg.reason !== "start") {
+        return;
+      }
+      if (webrtcConnectScheduled || signalingSocketBusy() || webrtcConnectPromise) return;
+      webrtcConnectScheduled = true;
+      window.setTimeout(() => {
+        webrtcConnectScheduled = false;
+        void connectWebRtcVideo();
+      }, 500);
     }
   }
 
@@ -2609,6 +3371,22 @@
     return gameModeIntent || isPointerLocked() || isGameModeFullscreen();
   }
 
+  function isEscapeKey(event) {
+    return event.key === "Escape" || event.code === "Escape";
+  }
+
+  function resetGameModeEscapeArm() {
+    gameModeEscapeArmedAt = 0;
+    gameModeEscapeForwardUp = false;
+  }
+
+  function gameModeEscapeArmed(now = performance.now()) {
+    return (
+      gameModeEscapeArmedAt > 0
+      && now - gameModeEscapeArmedAt <= GAME_MODE_ESCAPE_EXIT_MS
+    );
+  }
+
   async function exitGameModeInternal() {
     if (document.pointerLockElement) {
       document.exitPointerLock();
@@ -2780,6 +3558,7 @@
   function enterGameMode() {
     if (gameModeBusy || gameModeIntent) return;
     releasePressedKeys();
+    resetGameModeEscapeArm();
     gameModeBusy = true;
     gameModeIntent = true;
     gameModeGraceUntil = performance.now() + 2500;
@@ -2833,6 +3612,7 @@
     gameModeBusy = true;
     gameModeIntent = false;
     gameModeGraceUntil = 0;
+    resetGameModeEscapeArm();
     try {
       await exitGameModeInternal();
       releasePressedKeys();
@@ -2920,7 +3700,7 @@
     });
     canvas.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      void toggleGameMode();
+      event.stopPropagation();
     });
     for (const eventName of ["fullscreenchange", "webkitfullscreenchange"]) {
       document.addEventListener(eventName, onFullscreenChange);
@@ -2931,6 +3711,8 @@
       gameModeBusy = false;
       updateGameModeUi();
     });
+    window.addEventListener("keydown", handleGameModeEscapeKeyDown, true);
+    window.addEventListener("keyup", handleGameModeEscapeKeyUp, true);
     window.addEventListener("keydown", handleGameModeShortcut, true);
     updateGameModeUi();
   }
@@ -2950,8 +3732,48 @@
     void toggleGameMode();
   }
 
+  function handleGameModeEscapeKeyDown(event) {
+    if (!isEscapeKey(event) || event.repeat) return;
+    if (!isGameModeActive()) {
+      resetGameModeEscapeArm();
+      return;
+    }
+
+    const now = performance.now();
+    if (gameModeEscapeArmed(now)) {
+      resetGameModeEscapeArm();
+      event.preventDefault();
+      event.stopPropagation();
+      void exitGameMode();
+      return;
+    }
+
+    gameModeEscapeArmedAt = now;
+    gameModeEscapeForwardUp = true;
+    event.preventDefault();
+    event.stopPropagation();
+    if (isPointerLocked()) {
+      document.exitPointerLock();
+    }
+    sendInput({ type: "keydown", key: "Escape" });
+  }
+
+  function handleGameModeEscapeKeyUp(event) {
+    if (!isEscapeKey(event) || event.repeat) return;
+    if (!isGameModeActive()) {
+      resetGameModeEscapeArm();
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (!gameModeEscapeForwardUp) return;
+    gameModeEscapeForwardUp = false;
+    sendInput({ type: "keyup", key: "Escape" });
+  }
+
   function handleKeyDown(e) {
-    if (e.repeat || isGameModeShortcut(e)) return;
+    if (e.repeat || isGameModeShortcut(e) || isEscapeKey(e)) return;
     if (pressedKeys.has(e.key)) {
       e.preventDefault();
       return;
@@ -2962,7 +3784,7 @@
   }
 
   function handleKeyUp(e) {
-    if (isGameModeShortcut(e)) return;
+    if (isGameModeShortcut(e) || isEscapeKey(e)) return;
     if (pressedKeys.has(e.key)) {
       pressedKeys.delete(e.key);
       sendInput({ type: "keyup", key: e.key });
@@ -3063,16 +3885,24 @@
   }
 
   function bindSettingsUi() {
-    panelHeader.addEventListener("click", () => {
+    panelHeader.addEventListener("click", (event) => {
+      event.stopPropagation();
       controlPanel.classList.toggle("collapsed");
       panelToggle.textContent = controlPanel.classList.contains("collapsed") ? "▼" : "▲";
     });
-    controlPanel.addEventListener("dblclick", (event) => event.stopPropagation());
+    panelHeader.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    controlPanel.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
     for (const el of [
       videoQualityEl,
       videoCodecEl,
       videoBitrateEl,
-      webrtcLatencyPresetEl,
+      videoFpsEl,
       audioEncoderEl,
       audioBitrateEl,
       audioQualityEl,
@@ -3127,6 +3957,8 @@
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    webrtcUdpAbandoned = false;
+    webrtcUdpFailureReason = "";
     connectionState = "connecting";
     pendingSettings = false;
     applyingTransport = false;
@@ -3213,12 +4045,11 @@
         try {
           videoTransport = msg.videoTransport || "wss";
           webrtcSignalPort = msg.webrtcSignalPort || null;
-          if (Array.isArray(msg.webrtcIceServers) && msg.webrtcIceServers.length) {
-            applyWebRtcIceServers(msg.webrtcIceServers);
-          }
           updateTransportPanelVisibility();
           if (videoTransport === "udp") {
-            void runStunPreflight();
+            void refreshTurnIceServersFromServer().finally(() => runStunPreflight());
+          } else if (Array.isArray(msg.webrtcIceServers) && msg.webrtcIceServers.length) {
+            applyWebRtcIceServers(msg.webrtcIceServers);
           } else {
             stunPreflightResult = "";
             stunPreflightDetail = "";
@@ -3257,7 +4088,9 @@
       }
       if (msg.type === "ready") {
         if (msg.role) clientRole = msg.role;
-        if (Array.isArray(msg.webrtcIceServers) && msg.webrtcIceServers.length) {
+        if (videoTransport === "udp" && isRemotePlayPage()) {
+          void refreshTurnIceServersFromServer();
+        } else if (Array.isArray(msg.webrtcIceServers) && msg.webrtcIceServers.length) {
           applyWebRtcIceServers(msg.webrtcIceServers);
         }
         applySessionPresence(msg);

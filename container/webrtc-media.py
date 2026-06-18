@@ -222,6 +222,10 @@ class WebRtcBridge:
         self.sdp_mids: list[str] = []
         self.last_answer_ice: dict = {}
         self.server_ice_payloads: list[dict] = []
+        self.remote_answer_received = False
+        self.client_connected_at: Optional[float] = None
+
+    NEGOTIATION_GRACE_SEC = 45.0
 
     async def _cancel_helper_shutdown(self) -> None:
         if not self._helper_shutdown_task:
@@ -297,8 +301,15 @@ class WebRtcBridge:
             check=False,
         )
 
-    async def ensure_helper(self) -> None:
+    async def ensure_helper(self, *, reuse: bool = False) -> None:
         async with self._lock:
+            if (
+                reuse
+                and self.helper
+                and self.helper.poll() is None
+                and self.pending_offer
+            ):
+                return
             if self.helper and self.helper.poll() is None:
                 await self._stop_helper("fresh_client_session")
             elif self.helper:
@@ -421,21 +432,42 @@ class WebRtcBridge:
 
     async def handle_client(self, websocket: WebSocketServerProtocol) -> None:
         await self._cancel_helper_shutdown()
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        reuse_helper = False
         if self.clients:
+            # A new connection supersedes any stale/zombie client. The browser
+            # guards against opening duplicate sockets (signalingSocketBusy), so
+            # this only fires for a genuine takeover or a dead half-open socket —
+            # it must never let one stuck client permanently hold the slot.
             print(
-                f"[webrtc] rejecting extra client ({len(self.clients)} active)",
+                f"[webrtc] rejecting extra client (another client is already connected); "
+                f"replacing stale signaling client ({len(self.clients)} active)",
                 flush=True,
             )
-            await websocket.close(code=4001, reason="another client is already connected")
-            return
+            for old in list(self.clients):
+                self.clients.discard(old)
+                with contextlib.suppress(Exception):
+                    await old.close(code=4000, reason="replaced by new client")
+            # Reuse the live helper + already-gathered offer for fast reconnects
+            # so we don't thrash the encoder pipeline on every takeover.
+            reuse_helper = bool(
+                self.helper and self.helper.poll() is None and self.pending_offer
+            )
         self.clients.add(websocket)
         self._touch_session()
+        self.client_connected_at = now
+        self.remote_answer_received = False
         self.client_useful_ice = 0
-        self.sdp_mids = []
+        if not reuse_helper:
+            self.sdp_mids = []
         self.last_answer_ice = {}
-        print(f"[webrtc] client connected ({len(self.clients)} active)", flush=True)
+        print(
+            f"[webrtc] client connected ({len(self.clients)} active, reuse_helper={reuse_helper})",
+            flush=True,
+        )
         try:
-            await self.ensure_helper()
+            await self.ensure_helper(reuse=reuse_helper)
             try:
                 await asyncio.wait_for(self.offer_event.wait(), timeout=OFFER_WAIT_SECONDS)
             except asyncio.TimeoutError:
@@ -459,6 +491,8 @@ class WebRtcBridge:
             self.clients.discard(websocket)
             print(f"[webrtc] client disconnected ({len(self.clients)} active)", flush=True)
             if not self.clients:
+                self.client_connected_at = None
+                self.remote_answer_received = False
                 await self._cancel_helper_shutdown()
                 loop = asyncio.get_running_loop()
                 self.idle_deadline = loop.time() + IDLE_SHUTDOWN_SECONDS
@@ -476,6 +510,7 @@ class WebRtcBridge:
             encoded = base64.b64encode(sdp.encode("utf-8")).decode("ascii")
             self.helper.stdin.write(f"ANSWER {encoded}\n")
             self.helper.stdin.flush()
+            self.remote_answer_received = True
             self.last_answer_ice = _summarize_sdp_ice(sdp)
             print(
                 f"[webrtc] remote answer applied ({len(sdp)} bytes, ICE: {json.dumps(self.last_answer_ice, sort_keys=True)})",

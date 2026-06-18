@@ -39,6 +39,7 @@ wait_for_display() {
 modeline_for_mode() {
   case "$1" in
     640x480)   printf '%s\n' '23.75 640 656 720 864 480 483 487 525' ;;
+    800x600)   printf '%s\n' '36.00 800 824 896 1024 600 601 603 625' ;;
     960x720)   printf '%s\n' '55.00 960 992 1088 1248 720 723 727 750' ;;
     1024x768)  printf '%s\n' '65.00 1024 1048 1184 1344 768 771 777 806' ;;
     1440x1080) printf '%s\n' '129.00 1440 1528 1672 1904 1080 1083 1087 1120' ;;
@@ -78,7 +79,7 @@ if [ -z "$output" ]; then
 fi
 
 # Keep in sync with GAME_DISPLAY_MODES in ra2-stream-gateway.py
-for mode in 640x480 960x720 1024x768 1440x1080; do
+for mode in 640x480 800x600 960x720 1024x768 1440x1080; do
   add_mode "$mode" "$output" || true
 done
 

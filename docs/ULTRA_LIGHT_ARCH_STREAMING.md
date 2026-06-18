@@ -24,6 +24,8 @@ This is the **production** RA2 streaming profile for the DS225+. See `docs/GOLDE
 | Chromium / Chrome / Edge | **Primary** — WebCodecs + **WebRTC UDP** + Opus + Web Audio |
 | Safari | Not optimized |
 
+Transport settings are applied **live over the existing WebSocket** via `reconfigure` messages.
+
 ## Deploy
 
 ```bash
@@ -46,13 +48,15 @@ Remote WSS works on DDNS; **remote UDP** requires router forwards for **62001–
 
 After starting a game on LAN:
 
-- `udp video: WebRTC verified/…`
+- `udp video: WebRTC verified`
 - `webrtc rtp: N pkts` — N must increase
 - `wss video rx: M (should stop increasing)` — M should freeze
 
 ## Defaults (golden master)
 
 See `docs/GOLDEN_MASTER.md` §2.6. Client: **`SETTINGS_VERSION=49`**, `ultra-play.js?v=81`.
+
+Default frame rate: **24 fps** (balanced preset).
 
 ## Verify
 
@@ -62,6 +66,8 @@ RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 python3 -m pytest tests/ -q
 ssh MediaServer2Local 'cd /volume2/Data/App_Development/ra2-lan-party/project && sh scripts/probe-webrtc-turn.sh'
 ```
+
+If codec/VA-API capability probing fails, inspect `video-diagnostics.log` inside the player logs directory.
 
 ## Backup
 

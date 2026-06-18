@@ -37,6 +37,8 @@ Router: forward **TCP 6081 + 6082**. Hard-refresh after client updates (`Cmd+Shi
 
 **Production:** Ultra browser streaming with **LAN UDP WebRTC video** (verified). **Not production:** noVNC, Moonlight — [`docs/ARCHIVED_EXPERIMENTS.md`](docs/ARCHIVED_EXPERIMENTS.md).
 
+**Ultra Arch Browser** client lives in `container/remote-ultra/` (`index.html`, `ultra-play.js`, `webrtc-ice-utils.js`).
+
 ## Architecture
 
 ```text

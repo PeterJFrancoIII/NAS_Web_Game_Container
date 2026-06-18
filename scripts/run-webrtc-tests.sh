@@ -8,8 +8,14 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
   PYTHON=python
 fi
 
-echo "[webrtc-tests] python: test_webrtc_ice test_gateway_webrtc_ice test_ultra_play_ice_utils"
-"$PYTHON" -m unittest tests.test_webrtc_ice tests.test_gateway_webrtc_ice tests.test_ultra_play_ice_utils -v
+echo "[webrtc-tests] python: test_webrtc_ice test_gateway_webrtc_ice test_ultra_play_ice_utils test_remote_webrtc_contract test_turn_allocate_probe"
+"$PYTHON" -m unittest \
+  tests.test_webrtc_ice \
+  tests.test_gateway_webrtc_ice \
+  tests.test_ultra_play_ice_utils \
+  tests.test_remote_webrtc_contract \
+  tests.test_turn_allocate_probe \
+  -v
 
 if command -v node >/dev/null 2>&1; then
   echo "[webrtc-tests] node: ultra_play_ice_utils.test.mjs"

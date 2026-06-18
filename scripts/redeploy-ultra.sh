@@ -26,8 +26,8 @@ player_container() {
   esac
 }
 
-echo "[redeploy-ultra] running WebRTC unit tests"
-sh "$SCRIPT_DIR/run-webrtc-tests.sh"
+echo "[redeploy-ultra] running deploy test gate (WebRTC + full unit suite)"
+sh "$SCRIPT_DIR/run-deploy-tests.sh"
 
 echo "[redeploy-ultra] syncing project to ${HOST}:${TARGET}"
 NAS_HOST="$HOST" NAS_TARGET="$TARGET" sh "$SCRIPT_DIR/sync-to-nas.sh"
@@ -40,12 +40,14 @@ else
   compose_action="up -d --no-build --force-recreate"
 fi
 
-ssh "$HOST" "cd '$TARGET' && RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=${RA2_COMPOSE_ULTRA_UDP_HOST:-1} sh -c '. ./scripts/lib.sh; run_compose .env ${compose_action} ${SERVICES} ra2-coturn'"
+ssh "$HOST" "sudo sh -c 'cd '\''$TARGET'\'' && RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=${RA2_COMPOSE_ULTRA_UDP_HOST:-1} . ./scripts/lib.sh; sh coturn/update_coturn_ip.sh 2>/dev/null || true; run_compose .env ${compose_action} ${SERVICES} ra2-coturn'"
+
+echo "[redeploy-ultra] optional remote TURN probe (VPN on): sh scripts/probe-webrtc-turn-remote.sh"
 
 for service in $SERVICES; do
   echo "[redeploy-ultra] verifying ${service}"
   container="$(player_container "$service")"
-  ssh "$HOST" "cd '$TARGET' && sh -c '. ./scripts/lib.sh; run_docker exec ${container} sh -lc '\\''
+  ssh "$HOST" "sudo sh -c 'cd '\''$TARGET'\'' && . ./scripts/lib.sh && run_docker exec ${container} sh -lc '\\''
     set -eu
     test -x /opt/ra2/stream-helper || { echo \"stream-helper missing\"; exit 1; }
     pgrep -f ra2-stream-gateway.py >/dev/null || { echo \"gateway not running\"; exit 1; }
@@ -56,6 +58,10 @@ for service in $SERVICES; do
   '\\'''"
   port="$(player_http_port "$service")"
   echo "[redeploy-ultra] ${service}: https://${NAS_LAN_IP}:${port}/"
+  if [ "$service" = "ra2-player-1" ] || [ "$service" = "ra2-player-2" ]; then
+    echo "[redeploy-ultra] verifying AoE II session prep in ${container}"
+  ssh "$HOST" "sudo sh -c 'cd '\''$TARGET'\'' && CONTAINER='$container' sh scripts/verify-aoe2-session.sh '$container''"
+  fi
 done
 
 echo "[redeploy-ultra] complete"

@@ -18,6 +18,56 @@
     );
   }
 
+  function isRemotePlayPage(hostname) {
+    return !isLanHostname(hostname);
+  }
+
+  function iceServerUrl(entry) {
+    const urls = entry?.urls;
+    return String(Array.isArray(urls) ? urls[0] : urls || "");
+  }
+
+  /** VPN/DDNS: prefer TURN TCP then UDP; skip TURNS (broken self-signed TLS on NAS). */
+  function orderIceServersForRemote(servers, hostname) {
+    if (isLanHostname(hostname)) return servers;
+    const turnTcp = [];
+    const turnUdp = [];
+    const turnOther = [];
+    const stun = [];
+    const other = [];
+    for (const entry of servers || []) {
+      const url = iceServerUrl(entry);
+      if (url.startsWith("turns:")) continue;
+      if (url.startsWith("turn:")) {
+        if (url.includes("transport=tcp")) turnTcp.push(entry);
+        else if (url.includes("transport=udp")) turnUdp.push(entry);
+        else turnOther.push(entry);
+      } else if (url.startsWith("stun:")) stun.push(entry);
+      else other.push(entry);
+    }
+    return [...turnTcp, ...turnUdp, ...turnOther, ...stun, ...other];
+  }
+
+  /** Remote WebRTC: credentialed plain TURN only (no TURNS/STUN). */
+  function turnServersForRemotePlay(servers) {
+    return (servers || []).filter((entry) => {
+      const url = iceServerUrl(entry);
+      return url.startsWith("turn:") && isTurnIceEntry(entry);
+    });
+  }
+
+  /** Remote relay play: TURN entries only (no STUN). */
+  function iceServersForRelayPlay(servers) {
+    return (servers || []).filter((entry) => {
+      const url = iceServerUrl(entry);
+      return url.startsWith("turn:") || url.startsWith("turns:");
+    });
+  }
+
+  function sdpHasRelayIce(sdp) {
+    return /\btyp relay\b/.test(String(sdp || ""));
+  }
+
   function rewriteTurnUrlsForLan(servers, hostname) {
     if (!isLanHostname(hostname)) return servers;
     const lan = String(hostname || "");
@@ -56,6 +106,66 @@
       if (/\btyp host\b/.test(line) && !/\.local\b/.test(line)) return true;
     }
     return false;
+  }
+
+  function isUsableCandidateLine(line) {
+    const text = String(line || "");
+    if (!text) return false;
+    if (/\btyp srflx\b/.test(text) || /\btyp relay\b/.test(text)) return true;
+    if (/\btyp host\b/.test(text) && !/\.local\b/.test(text)) return true;
+    return false;
+  }
+
+  function gatheredLinesHaveUsableIce(lines) {
+    return (lines || []).some((line) => isUsableCandidateLine(line));
+  }
+
+  function gatheredLinesHaveRelay(lines) {
+    return (lines || []).some((line) => /\btyp relay\b/.test(String(line || "")));
+  }
+
+  function hasUsableIce({ sdp, gatheredLines }) {
+    return sdpHasUsableLocalIce(sdp) || gatheredLinesHaveUsableIce(gatheredLines);
+  }
+
+  function embedCandidateLinesInSdp(sdp, lines) {
+    if (!sdp || !lines?.length) return sdp || "";
+    const ending = String(sdp).includes("\r\n") ? "\r\n" : "\n";
+    const existing = new Set(
+      String(sdp)
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("a=candidate:"))
+        .map((line) => line.trim()),
+    );
+    const additions = [];
+    for (const raw of lines) {
+      const trimmed = String(raw || "").trim();
+      if (!trimmed) continue;
+      const line = trimmed.startsWith("a=candidate:")
+        ? trimmed
+        : `a=candidate:${trimmed}`;
+      if (!isUsableCandidateLine(line)) continue;
+      if (existing.has(line)) continue;
+      existing.add(line);
+      additions.push(line);
+    }
+    if (!additions.length) return sdp;
+    const base = String(sdp).replace(/\r?\n$/, "");
+    return `${base}${ending}${additions.join(ending)}${ending}`;
+  }
+
+  function shouldSendEndOfCandidates(usefulCandidateSent) {
+    return Boolean(usefulCandidateSent);
+  }
+
+  /** Cap how long remote answer SDP may wait before the server times out. */
+  function remoteAnswerGatherDeadlineMs(remoteMs = 15000, lanMs = 1500) {
+    return remoteMs;
+  }
+
+  function buildFastAnswerSdp(baseSdp, gatheredLines) {
+    let sdp = sanitizeAnswerSdpForServer(baseSdp || "");
+    return embedCandidateLinesInSdp(sdp, gatheredLines);
   }
 
   function sanitizeAnswerSdpForServer(sdp) {
@@ -117,9 +227,154 @@
     return line;
   }
 
+  /** Relay-only ICE when ?relayOnly=1 diagnostic or forced relay retry — not default remote. */
+  function shouldUseRelayIcePolicy(opts = {}) {
+    return Boolean(
+      opts.relayOnlyDiagnostic ||
+        opts.webrtcForceRelayOnly ||
+        (opts.preferRelayOnRemote && opts.hasTurnServers),
+    );
+  }
+
+  function fallbackReasonAllowsRelayRetry(reason) {
+    if (!reason) return false;
+    return /ICE|timed out|connection failed|never confirmed|connectivity|video stalled|video lost|no reachable ICE|end-of-candidates|signaling socket closed|mDNS-only|trickle timeout/i.test(
+      String(reason),
+    );
+  }
+
+  function shouldAttemptRemoteRelayRetry(ctx = {}) {
+    if (ctx.reason && /no TURN relay/i.test(String(ctx.reason))) {
+      return false;
+    }
+    return Boolean(
+      ctx.allowRelayRetry !== false &&
+        fallbackReasonAllowsRelayRetry(ctx.reason) &&
+        !ctx.relayReconnectAttempted &&
+        !ctx.relayOnlyDiagnostic &&
+        ctx.isRemotePlayPage &&
+        ctx.hasTurnServers,
+    );
+  }
+
+  function portRangesOverlap(minA, maxA, minB, maxB) {
+    return Number(minA) <= Number(maxB) && Number(minB) <= Number(maxA);
+  }
+
+  /** Guard coturn relay ports vs player1 router forward + player2 docker-proxy publish. */
+  function validateCoturnRelayPorts(cfg = {}) {
+    const errors = [];
+    const relayMin = Number(cfg.relayMin);
+    const relayMax = Number(cfg.relayMax);
+    const turnListenPort = Number(cfg.turnListenPort);
+    const player1UdpMin = Number(cfg.player1UdpMin);
+    const player1UdpMax = Number(cfg.player1UdpMax);
+    const player2UdpMin = Number(cfg.player2UdpMin);
+    const player2UdpMax = Number(cfg.player2UdpMax);
+    if (relayMin > relayMax) {
+      errors.push(`coturn relay min ${relayMin} > max ${relayMax}`);
+    }
+    if (portRangesOverlap(relayMin, relayMax, player2UdpMin, player2UdpMax)) {
+      errors.push(
+        `coturn relay ${relayMin}-${relayMax} overlaps player2 publish ${player2UdpMin}-${player2UdpMax} (docker-proxy blocks relay bind)`,
+      );
+    }
+    if (turnListenPort >= relayMin && turnListenPort <= relayMax) {
+      errors.push(`TURN listen port ${turnListenPort} must not be inside relay range`);
+    }
+    if (relayMin < player1UdpMin || relayMax > player1UdpMax) {
+      errors.push(
+        `coturn relay ${relayMin}-${relayMax} outside player1 router forward ${player1UdpMin}-${player1UdpMax}`,
+      );
+    }
+    return { ok: errors.length === 0, errors };
+  }
+
+  /** Require consecutive RTP growth before treating UDP as verified. */
+  function isRtpSustained(previousPackets, currentPackets, growthStreak, options = {}) {
+    const minStreak = options.minStreak ?? 2;
+    const minPackets = options.minPackets ?? 8;
+    const prev = Number(previousPackets || 0);
+    const cur = Number(currentPackets || 0);
+    const growing = cur > prev;
+    const streak = growing ? growthStreak + 1 : cur > 0 ? 0 : growthStreak;
+    return {
+      sustained: streak >= minStreak && cur >= minPackets,
+      growthStreak: streak,
+    };
+  }
+
+  function stallGraceMs(isRemote, lanMs = 3000, remoteMs = 12000) {
+    return isRemote ? remoteMs : lanMs;
+  }
+
+  function disconnectGraceMs(isRemote, lanMs = 4000, remoteMs = 30000) {
+    return isRemote ? remoteMs : lanMs;
+  }
+
+  /** Remote play needs decoded frames or sustained RTP — not a single burst. */
+  function isUdpMediaVerified(stats = {}) {
+    const framesDecoded = Number(stats.framesDecoded || 0);
+    const framesReceived = Number(stats.framesReceived || 0);
+    const packets = Number(stats.packets || 0);
+    const rtpSustained = Boolean(stats.rtpSustained);
+    if (stats.isRemote) {
+      return framesDecoded > 0 || rtpSustained;
+    }
+    return (
+      framesDecoded > 0 ||
+      rtpSustained ||
+      (framesReceived > 15 && packets > 20)
+    );
+  }
+
+  function shouldFallbackOnConnectionDisconnect(ctx = {}) {
+    if (!ctx.videoActive) return false;
+    const ice = String(ctx.iceConnectionState || "");
+    if (ice === "connected" || ice === "completed") return false;
+    if (ctx.rtpRecent) return false;
+    return true;
+  }
+
+  function shouldFallbackForStall({ lastProgressAt, now, stallMs, rtpGrowing }) {
+    if (!lastProgressAt || rtpGrowing) return false;
+    return now - lastProgressAt > stallMs;
+  }
+
+  /** Early-trickle mode owns end-of-candidates; onicecandidate null must not race ahead. */
+  function shouldScheduleTrickleEndOfCandidates({ earlyTrickleActive, answerSent }) {
+    return Boolean(answerSent && !earlyTrickleActive);
+  }
+
   const api = {
     isLanHostname,
+    isRemotePlayPage,
     isTurnIceEntry,
+    iceServerUrl,
+    orderIceServersForRemote,
+    sdpHasRelayIce,
+    shouldUseRelayIcePolicy,
+    fallbackReasonAllowsRelayRetry,
+    shouldAttemptRemoteRelayRetry,
+    portRangesOverlap,
+    validateCoturnRelayPorts,
+    isRtpSustained,
+    stallGraceMs,
+    disconnectGraceMs,
+    isUdpMediaVerified,
+    shouldFallbackOnConnectionDisconnect,
+    shouldFallbackForStall,
+    shouldScheduleTrickleEndOfCandidates,
+    isUsableCandidateLine,
+    gatheredLinesHaveUsableIce,
+    gatheredLinesHaveRelay,
+    hasUsableIce,
+    embedCandidateLinesInSdp,
+    shouldSendEndOfCandidates,
+    remoteAnswerGatherDeadlineMs,
+    buildFastAnswerSdp,
+    iceServersForRelayPlay,
+    turnServersForRemotePlay,
     rewriteTurnUrlsForLan,
     summarizeSdpIce,
     sdpHasUsableLocalIce,

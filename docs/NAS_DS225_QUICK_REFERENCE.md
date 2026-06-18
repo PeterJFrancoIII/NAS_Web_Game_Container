@@ -1,6 +1,6 @@
 # MediaServer2 (DS225+) — Quick Reference
 
-Last verified: **2026-06-14** via SSH (`MediaServer2` / `MediaServer2Local`).
+Last verified: **2026-06-15** via SSH (`MediaServer2` over DDNS while VPN'd) **and browser end-to-end over VPN**. RA2 **remote WebRTC**: diagnosed the WSS-fallback as a **NAT-hairpin trap** (NAS can't reach its own public IP) and fixed it with **server-side TURN via LAN coturn** in `webrtc-media-helper.c`. Confirmed working: RA2 video streams remotely over **UDP relay** (`selected pair … localRelayProtocol:"udp"`, framesDecoded rising), coturn shows the server's own relay from `192.168.0.193` carrying bidirectional media (`peer usage rp≈2000/interval`).
 
 ---
 
@@ -196,7 +196,23 @@ cd /volume2/Data/App_Development/ra2-lan-party/project
 sudo sh scripts/verify-deployment.sh
 ```
 
-Docs: `docs/GOLDEN_MASTER.md`, `docs/DEPLOY_SYNOLOGY.md`, `docs/ULTRA_LIGHT_ARCH_STREAMING.md`
+**Remote WebRTC (DDNS / VPN):** On remote pages (`*.synology.me`) the client uses **relay-first** ICE (`iceTransportPolicy: "relay"`) and does one relay-only reconnect before WSS fallback. Verify the relay path from a VPN'd Mac **before** debugging the browser:
+
+```bash
+sh scripts/probe-webrtc-turn-remote.sh        # expect: relay allocated on 2/2 transport(s)
+```
+
+Then open `https://peterjfrancoiii2.synology.me:6081/` (hard refresh) — transport panel should show `udp video: WebRTC verified` with rising `webrtc rtp:`. Use `?relayOnly=1` to force relay-only for isolation. `coturn/update_coturn_ip.sh` runs during `redeploy-ultra.sh` to keep `external-ip` in sync with the WAN IP (stale WAN IP breaks remote relay candidates).
+
+> **NAT hairpin trap + server-side TURN (fixed 2026-06-15).** This router does **not** hairpin (the NAS can't reach its own public IP: `curl https://108.2.161.76:6081` from the NAS times out; the LAN IP returns 200). Because the media server is **on the same NAS** as coturn, it could never send video back to the browser's relay candidate (advertised on the public IP) → remote always fell back to WSS even though the relay allocated. Fix: `webrtc-media-helper.c` now adds the **LAN** coturn as a server-side TURN server (`turn://…@192.168.0.193:62011`) so the server relays outbound over the LAN and coturn bridges the two allocations internally. Confirm server-side:
+> ```bash
+> ssh MediaServer2 'sudo /usr/local/bin/docker logs --tail 200 RA2_Coturn | grep -aE "192\.168\.0\.193.*ALLOCATE processed, success"'   # server's own relay
+> ```
+> **Deploy note:** the helper `.c` files are bind-mounted `:ro` and recompiled at container start (`WEBRTC_RECOMPILE_HELPER=1`). To ship a `.c` change: `NAS_HOST=MediaServer2 RA2_ULTRA_BUILD=0 sh scripts/redeploy-ultra.sh` (sync + **recreate without image rebuild** re-resolves the bind mount and recompiles). A full image rebuild (`RA2_ULTRA_BUILD=1`) is only needed for new system packages.
+>
+> **Red herring — empty-user `401 Unauthorized` in coturn is NOT a failure.** A VPN'd browser gathers TURN candidates from **every** local interface (IPv6, the VPN tunnel `10.14.0.x`, the LAN `192.168.0.x`). All the non-working interfaces emit `icecandidateerror 701` and credential-less `user <> … 401` TCP attempts that coturn logs then closes. Only the one working interface (the VPN exit) actually allocates — look for the browser's **successful UDP** allocation and the server's `192.168.0.193` relay with non-zero **`peer usage`**. Don't chase the `401`s; chase whether `peer usage rp/rb` is climbing.
+
+Docs: `docs/GOLDEN_MASTER.md`, `docs/GOLDEN_MASTER_UDP_LAN.md`, `docs/DEPLOY_SYNOLOGY.md`, `docs/ULTRA_LIGHT_ARCH_STREAMING.md`
 
 ---
 
@@ -209,11 +225,13 @@ Docs: `docs/GOLDEN_MASTER.md`, `docs/DEPLOY_SYNOLOGY.md`, `docs/ULTRA_LIGHT_ARCH
 | 6881 | TCP+UDP | BitTorrent (via Gluetun) |
 | 6081 | TCP | RA2 player 1 (ultra stream) |
 | 6082 | TCP | RA2 player 2 (ultra stream) |
+| 62001–62040 | UDP + TCP | WebRTC media + TURN (62011) + coturn relay (62012–62020) |
+| 5349 | TCP | TURNS — **gated off** (`WEBRTC_TURNS_ENABLED=0`); self-signed cert, browsers reject `turns:` |
 | 23921 | TCP | SSH |
 | 10443 | TCP | DSM remote HTTPS (router forward → 5001) |
 | 41641 | UDP | Tailscale direct peering (optional forward) |
 
-Router should forward **6081–6082** for remote RA2 play. Do **not** forward 8080 publicly.
+Router should forward **6081–6082** (TCP) and **62001–62040** (UDP+TCP) for remote RA2 UDP play — plain TURN on **62011 (UDP+TCP)** is the confirmed VPN-friendly relay path. **5349 (TCP)** is only useful once coturn has a cert valid for `peterjfrancoiii2.synology.me`; until then leave TURNS gated off. Do **not** forward 8080 publicly.
 
 ---
 
@@ -262,6 +280,7 @@ Router should forward **6081–6082** for remote RA2 play. Do **not** forward 80
 | Gluetun won't start | `/dev/net/tun` missing → run boot script or `sudo modprobe tun && sudo mknod /dev/net/tun c 10 200` |
 | qBit stuck on metadata | Settings → Proxy = **None**; use `.torrent` file not Search tab; try US VPN exit |
 | RA2 unreachable remotely | Router TCP 6081–6082 → 192.168.0.193; DDNS resolves to home WAN |
+| RA2 remote falls back to WSS video | `sh scripts/probe-webrtc-turn-remote.sh` (expect 2/2 relay); confirm router UDP+TCP 62001–62040; check `update_coturn_ip.sh` ran (fresh `external-ip`); hard-refresh browser for latest `?v=`. **If the relay allocates but media never flows → NAT-hairpin trap:** confirm the helper added server-side TURN (`docker logs Cloud_Gaming_Player1 \| grep "server-side TURN relay added"`) and coturn shows a `192.168.0.193 … ALLOCATE … success` (server's own relay). |
 | SSH timeout on LAN | Use `MediaServer2` (DDNS) instead of `MediaServer2Local` |
 | Sudo prompts over SSH | Re-run `enable-passwordless-sudo.sh` after DSM update |
 

@@ -6,7 +6,7 @@
 
 This is the **single authoritative document** for reproducing, operating, and restoring the production ultra browser streaming stack. Supports **Red Alert 2 / Yuri's Revenge**, **Age of Empires II (1999)**, and **StarCraft + Brood War** from one container image per player.
 
-**LAN UDP video (verified June 2026):** split-protocol WebRTC video + WSS audio/control. See [`GOLDEN_MASTER_UDP_LAN.md`](GOLDEN_MASTER_UDP_LAN.md) for the locked UDP descriptor, ports, and verification checklist.
+**LAN + remote UDP video (verified June 2026):** split-protocol WebRTC video + WSS audio/control. LAN at `https://192.168.0.193:6081/`; remote at `https://peterjfrancoiii2.synology.me:6081/` over TURN relay with server-side LAN coturn (NAT hairpin bypass). See [`GOLDEN_MASTER_UDP_LAN.md`](GOLDEN_MASTER_UDP_LAN.md) for the locked UDP descriptor, ports, and verification checklist.
 
 Written for **low-context LLM agents** and developers with limited prior exposure to the project.
 
@@ -68,7 +68,7 @@ Watchdog in `run-game-session.sh` re-applies `taskset` — Wine children escape 
 | **Wine** | Kron4ek 10.8, `amd64` package, **`win32` prefix**, multilib |
 | **Game launcher** | `GAME_LAUNCHER_ENABLED=1` (default) |
 | **Game manifest** | `config/games.json` |
-| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=49`**, `webrtc-ice-utils.js`, `ultra-play.js?v=81` |
+| **Browser client** | `container/remote-ultra/` — **`SETTINGS_VERSION=66`**, `webrtc-ice-utils.js?v=102`, `ultra-play.js?v=102` |
 
 ### 2.2 Supported games (`config/games.json`)
 
@@ -119,9 +119,9 @@ Shared: `VNC_PASSWORD`, `RA2_MEM_LIMIT`, all `ULTRA_*` vars, image, game asset m
 5. **Transport → Switch game…** sends a new `selectGame` while connected.
 6. If controller slot is taken, client shows **Watch stream** panel — user must **click manually** (no auto-join to spectator mode).
 
-Client cache bust: `index.html` loads `webrtc-ice-utils.js` then `ultra-play.js?v=81`. Gateway serves static files using `urlparse(path).path` so query strings do not break JS delivery.
+Client cache bust: `index.html` loads `webrtc-ice-utils.js?v=102` then `ultra-play.js?v=102`. Gateway serves static files using `urlparse(path).path` so query strings do not break JS delivery.
 
-**UDP video (LAN verified):** after ICE connects, transport must reach **`udp video: WebRTC verified/`** with rising **`webrtc rtp:`** packet counts before treating UDP as confirmed. WSS `video` messages should stop incrementing after verification.
+**UDP video (LAN + remote verified):** after ICE connects, transport must reach **`udp video: WebRTC verified/`** with rising **`webrtc rtp:`** packet counts before treating UDP as confirmed. Remote play uses **`iceTransportPolicy: "relay"`** and server-side TURN via LAN coturn. WSS `video` messages should stop incrementing after verification.
 
 ### 2.6 Transport defaults (locked)
 
@@ -312,7 +312,7 @@ RA2_COMPOSE_ULTRA=1 RA2_COMPOSE_ULTRA_UDP=1 RA2_COMPOSE_ULTRA_UDP_HOST=1 sh scri
 sh scripts/run-webrtc-tests.sh
 python3 -m pytest tests/ -q
 curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:6081/
-curl -sk -o /dev/null -w "%{http_code}\n" "https://127.0.0.1:6081/ultra-play.js?v=81"
+curl -sk -o /dev/null -w "%{http_code}\n" "https://127.0.0.1:6081/ultra-play.js?v=102"
 curl -sk https://127.0.0.1:6081/turn-ice.json | python3 -m json.tool | head
 ```
 
@@ -452,7 +452,7 @@ sh scripts/run-webrtc-tests.sh
 python3 -m pytest tests/ -q
 RA2_COMPOSE_ULTRA=1 sh scripts/check-ultra-ready.sh
 curl -sk -o /dev/null -w "6081=%{http_code}\n" https://192.168.0.193:6081/
-curl -sk -o /dev/null -w "js=%{http_code}\n" "https://192.168.0.193:6081/ultra-play.js?v=81"
+curl -sk -o /dev/null -w "js=%{http_code}\n" "https://192.168.0.193:6081/ultra-play.js?v=102"
 # LAN play: transport panel shows "WebRTC verified" + rising webrtc rtp pkts
 ```
 

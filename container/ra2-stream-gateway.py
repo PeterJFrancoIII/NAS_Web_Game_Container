@@ -64,7 +64,8 @@ def _webrtc_ice_servers() -> list[dict]:
             }
         )
     turns_port = os.environ.get("WEBRTC_TURNS_PORT", "5349").strip()
-    if turns_port and turn_host:
+    turns_enabled = os.environ.get("WEBRTC_TURNS_ENABLED", "0").strip() == "1"
+    if turns_enabled and turns_port and turn_host:
         servers.append(
             {
                 "urls": f"turns:{turn_host}:{turns_port}?transport=tcp",
@@ -105,10 +106,22 @@ DIAGNOSTIC_DIR = Path(
 )
 INPUT_TRACE = Path(os.environ.get("ULTRA_INPUT_TRACE", str(DIAGNOSTIC_DIR / "input-events.log")))
 GATEWAY_LOG = Path(os.environ.get("ULTRA_GATEWAY_LOG", str(DIAGNOSTIC_DIR / "gateway.log")))
-WEBRTC_RUNTIME_PRESET_FILE = Path(
+WEBRTC_RUNTIME_BITRATE_FILE = Path(
     os.environ.get(
-        "WEBRTC_RUNTIME_PRESET_FILE",
-        str(DIAGNOSTIC_DIR / "webrtc-runtime-preset"),
+        "WEBRTC_RUNTIME_BITRATE_FILE",
+        str(DIAGNOSTIC_DIR / "webrtc-runtime-bitrate"),
+    )
+)
+WEBRTC_RUNTIME_CODEC_FILE = Path(
+    os.environ.get(
+        "WEBRTC_RUNTIME_CODEC_FILE",
+        str(DIAGNOSTIC_DIR / "webrtc-runtime-codec"),
+    )
+)
+WEBRTC_RUNTIME_FPS_FILE = Path(
+    os.environ.get(
+        "WEBRTC_RUNTIME_FPS_FILE",
+        str(DIAGNOSTIC_DIR / "webrtc-runtime-fps"),
     )
 )
 DISPLAY = os.environ.get("DISPLAY", ":1")
@@ -315,9 +328,10 @@ async def authorize_game_selection(game_id: str) -> tuple[bool, str]:
 
 VIDEO_WIDTH, VIDEO_HEIGHT = _display_dims()
 
-# 480p / 768p (XGA) / 720p / 1080p tiers (4:3). Exposed to Wine via configure-display-modes.sh.
+# 480p / 600p (SVGA) / 768p (XGA) / 720p / 1080p tiers (4:3). Exposed to Wine via configure-display-modes.sh.
 RESOLUTION_TIERS: dict[str, tuple[int, int]] = {
     "480p": (640, 480),
+    "600p": (800, 600),
     "768p": (1024, 768),
     "720p": (960, 720),
     "1080p": (1440, 1080),
@@ -331,13 +345,14 @@ MAX_DISPLAY_HEIGHT = max(height for _, height in GAME_DISPLAY_MODES)
 MIN_DISPLAY_WIDTH = min(width for width, _ in GAME_DISPLAY_MODES)
 MIN_DISPLAY_HEIGHT = min(height for _, height in GAME_DISPLAY_MODES)
 MAX_VIDEO_FPS = 30
+ALLOWED_VIDEO_FPS = frozenset({20, 24, 30})
 VIDEO_QUALITY_PRESETS = {
     "low": {"fps": 20},
     "balanced": {"fps": 24},
     "sharp": {"fps": MAX_VIDEO_FPS},
 }
 ALLOWED_VIDEO_QUALITY = frozenset(VIDEO_QUALITY_PRESETS)
-ALLOWED_VIDEO_BITRATES = frozenset({300000, 450000, 600000, 900000, 1200000, 1600000, 2000000})
+ALLOWED_VIDEO_BITRATES = frozenset({300000, 450000, 600000, 900000, 1200000, 1600000, 2000000, 3500000})
 ALLOWED_VIDEO_RESOLUTIONS = tuple(
     f"{width}x{height}" for width, height in GAME_DISPLAY_MODES
 )
@@ -346,16 +361,26 @@ ALLOWED_AUDIO_QUALITY = frozenset({"44100", "48000"})
 ALLOWED_AUDIO_BITRATES = frozenset({64000, 96000, 128000})
 ALLOWED_INPUT_HZ = frozenset({60, 125, 200})
 ALLOWED_AUDIO_ENCODERS = frozenset({"opus", "pcm"})
-ALLOWED_WEBRTC_LATENCY_PRESETS = frozenset({"stable", "low", "experimental"})
-STREAM_TRANSPORT_FIELDS = (
-    "videoQuality",
-    "videoCodec",
-    "videoBitrate",
-    "audioEncoder",
-    "audioQuality",
-    "audioBitrate",
-    "inputMoveHz",
+VIDEO_TRANSPORT_FIELDS = ("videoQuality", "videoCodec", "videoBitrate", "videoFps")
+AUDIO_TRANSPORT_FIELDS = ("audioEncoder", "audioQuality", "audioBitrate")
+STREAM_TRANSPORT_FIELDS = VIDEO_TRANSPORT_FIELDS + AUDIO_TRANSPORT_FIELDS + ("inputMoveHz",)
+INPUT_MESSAGE_TYPES = frozenset(
+    {
+        "mousemove",
+        "mousedown",
+        "mouseup",
+        "click",
+        "keydown",
+        "keyup",
+        "keyup_all",
+        "wheel",
+    }
 )
+GAME_WINDOW_PATTERNS: dict[str, tuple[str, ...]] = {
+    "ra2": ("Yuri's Revenge", "Red Alert 2", "Red Alert"),
+    "starcraft": ("StarCraft", "Brood War"),
+    "aoe2": ("Age of Empires II", "EMPIRES2"),
+}
 AVAILABLE_CACHE: dict = {}
 FACTORY_CACHE: dict[str, bool] = {}
 H265_QSV_FACTORIES = ("qsvh265enc", "msdkh265enc")
@@ -370,8 +395,40 @@ SPECTATOR_SESSIONS: set["StreamSession"] = set()
 ACTIVE_SESSION_LOCK = asyncio.Lock()
 
 
+def _websocket_open(websocket) -> bool:
+    try:
+        from websockets.protocol import State
+
+        return websocket.state is State.OPEN
+    except Exception:
+        return True
+
+
+async def prune_stale_sessions() -> None:
+    """Drop controller/spectator slots whose WebSocket is no longer open."""
+    async with ACTIVE_SESSION_LOCK:
+        controller = ACTIVE_SESSION
+        spectators = list(SPECTATOR_SESSIONS)
+    if controller and not _websocket_open(controller.websocket):
+        print(
+            f"[ultra-gateway] pruning stale controller (socket closed) "
+            f"(player {PLAYER_ID})",
+            flush=True,
+        )
+        await controller.release_controller_slot("stale socket pruned")
+    stale_spectators = [
+        session for session in spectators if not _websocket_open(session.websocket)
+    ]
+    if stale_spectators:
+        async with ACTIVE_SESSION_LOCK:
+            for session in stale_spectators:
+                SPECTATOR_SESSIONS.discard(session)
+
+
 def session_presence() -> dict[str, object]:
     controller = ACTIVE_SESSION
+    if controller and not _websocket_open(controller.websocket):
+        controller = None
     streaming = bool(controller and controller.stream_started)
     return {
         "controllerActive": controller is not None,
@@ -568,21 +625,19 @@ def _audio_encoder_available(encoder: str) -> bool:
     return False
 
 
-def _default_webrtc_latency_preset() -> str:
-    if WEBRTC_RUNTIME_PRESET_FILE.is_file():
-        try:
-            runtime = WEBRTC_RUNTIME_PRESET_FILE.read_text(encoding="utf-8").strip().lower()
-        except OSError:
-            runtime = ""
-        if runtime in ALLOWED_WEBRTC_LATENCY_PRESETS:
-            return runtime
-    preset = os.environ.get("WEBRTC_LATENCY_PRESET", "low").strip().lower()
-    return preset if preset in ALLOWED_WEBRTC_LATENCY_PRESETS else "low"
+def _write_webrtc_runtime_bitrate(bitrate: int) -> None:
+    WEBRTC_RUNTIME_BITRATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WEBRTC_RUNTIME_BITRATE_FILE.write_text(f"{int(bitrate)}\n", encoding="utf-8")
 
 
-def _write_webrtc_runtime_preset(preset: str) -> None:
-    WEBRTC_RUNTIME_PRESET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WEBRTC_RUNTIME_PRESET_FILE.write_text(f"{preset.strip().lower()}\n", encoding="utf-8")
+def _write_webrtc_runtime_codec(codec: str) -> None:
+    WEBRTC_RUNTIME_CODEC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WEBRTC_RUNTIME_CODEC_FILE.write_text(f"{codec.strip().upper()}\n", encoding="utf-8")
+
+
+def _write_webrtc_runtime_fps(fps: int) -> None:
+    WEBRTC_RUNTIME_FPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WEBRTC_RUNTIME_FPS_FILE.write_text(f"{int(fps)}\n", encoding="utf-8")
 
 
 async def _restart_webrtc_media(reason: str) -> None:
@@ -639,8 +694,6 @@ def default_settings() -> dict:
             MAX_VIDEO_FPS,
         ),
     }
-    if VIDEO_UDP:
-        settings["webrtcLatencyPreset"] = _default_webrtc_latency_preset()
     return settings
 
 
@@ -677,6 +730,7 @@ def get_available_options() -> dict:
             {
                 "videoQuality": sorted(ALLOWED_VIDEO_QUALITY),
                 "videoBitrate": sorted(ALLOWED_VIDEO_BITRATES),
+                "videoFps": sorted(ALLOWED_VIDEO_FPS),
                 "videoCodec": video_codecs,
                 "audioEncoder": audio_encoders,
                 "audioQuality": sorted(ALLOWED_AUDIO_QUALITY),
@@ -693,8 +747,6 @@ def get_available_options() -> dict:
     available = dict(AVAILABLE_CACHE)
     display_w, display_h = _configured_display_dims()
     available["displayResolution"] = _format_display_resolution(display_w, display_h)
-    if VIDEO_UDP:
-        available["webrtcLatencyPreset"] = sorted(ALLOWED_WEBRTC_LATENCY_PRESETS)
     return available
 
 
@@ -718,6 +770,22 @@ def validate_settings(requested: Optional[dict]) -> dict:
     active["videoQuality"] = quality
     preset = VIDEO_QUALITY_PRESETS[quality]
     active["videoFps"] = min(preset["fps"], MAX_VIDEO_FPS)
+
+    try:
+        requested_fps = int(requested.get("videoFps", active["videoFps"]))
+    except (TypeError, ValueError):
+        requested_fps = active["videoFps"]
+    if requested_fps not in ALLOWED_VIDEO_FPS:
+        fallbacks.append(
+            {
+                "field": "videoFps",
+                "requested": requested_fps,
+                "active": active["videoFps"],
+                "reason": "unsupported frame rate",
+            }
+        )
+    else:
+        active["videoFps"] = requested_fps
 
     try:
         video_bitrate = int(requested.get("videoBitrate", defaults["videoBitrate"]))
@@ -879,35 +947,16 @@ def validate_settings(requested: Optional[dict]) -> dict:
         move_hz = defaults["inputMoveHz"]
     active["inputMoveHz"] = move_hz
 
-    if VIDEO_UDP:
-        preset = str(
-            requested.get("webrtcLatencyPreset", defaults.get("webrtcLatencyPreset", "low"))
-        ).strip().lower()
-        if preset not in ALLOWED_WEBRTC_LATENCY_PRESETS:
-            fallbacks.append(
-                {
-                    "field": "webrtcLatencyPreset",
-                    "requested": preset,
-                    "active": defaults.get("webrtcLatencyPreset", "low"),
-                    "reason": "unsupported WebRTC latency preset",
-                }
-            )
-            preset = defaults.get("webrtcLatencyPreset", "low")
-        active["webrtcLatencyPreset"] = preset
-
     requested_payload = {
         "videoQuality": requested.get("videoQuality", defaults["videoQuality"]),
         "videoCodec": requested.get("videoCodec", defaults["videoCodec"]),
         "videoBitrate": requested.get("videoBitrate", defaults["videoBitrate"]),
+        "videoFps": requested.get("videoFps", defaults["videoFps"]),
         "audioEncoder": requested.get("audioEncoder", defaults["audioEncoder"]),
         "audioQuality": requested.get("audioQuality", defaults["audioQuality"]),
         "audioBitrate": requested.get("audioBitrate", defaults["audioBitrate"]),
         "inputMoveHz": requested.get("inputMoveHz", defaults["inputMoveHz"]),
     }
-    if VIDEO_UDP:
-        requested_payload["webrtcLatencyPreset"] = requested.get(
-            "webrtcLatencyPreset", defaults.get("webrtcLatencyPreset", "low")
-        )
 
     return {
         "requested": requested_payload,
@@ -1054,17 +1103,22 @@ class InputDispatcher:
             return
         self.last_focus_at = now
         env = {**os.environ, "DISPLAY": DISPLAY}
-        try:
-            subprocess.run(
-                ["xdotool", "search", "--name", "Yuri's Revenge", "windowactivate", "%@"],
-                env=env,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-            )
-        except Exception as exc:
-            print(f"[ultra-gateway] window focus failed: {exc}", flush=True)
+        game_id = str(get_current_game_session().get("id") or "")
+        patterns = GAME_WINDOW_PATTERNS.get(game_id, GAME_WINDOW_PATTERNS["ra2"])
+        for pattern in patterns:
+            try:
+                result = subprocess.run(
+                    ["xdotool", "search", "--name", pattern, "windowactivate", "%@"],
+                    env=env,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                if result.returncode == 0:
+                    return
+            except Exception as exc:
+                print(f"[ultra-gateway] window focus failed: {exc}", flush=True)
 
     def _trace_event(self, event: dict, note: str = "") -> None:
         kind = str(event.get("type", "unknown"))
@@ -1196,6 +1250,27 @@ class StreamSession:
         self.replaced = False
         self.stream_started = False
         self.role = "pending"
+        self._transport_apply_lock = asyncio.Lock()
+
+    async def _run_transport_settings(
+        self,
+        msg: dict,
+        *,
+        restart_helper: bool,
+        become_active: bool,
+    ) -> None:
+        async with self._transport_apply_lock:
+            try:
+                await self._apply_transport_settings(
+                    msg,
+                    restart_helper=restart_helper,
+                    become_active=become_active,
+                )
+            except Exception as exc:
+                print(
+                    f"[ultra-gateway] transport settings failed: {exc} (player {PLAYER_ID})",
+                    flush=True,
+                )
 
     def _mirror_controller_state(self, controller: "StreamSession") -> None:
         self.active_settings = dict(controller.active_settings)
@@ -1271,6 +1346,38 @@ class StreamSession:
             self.role = "controller"
             return True
 
+    async def release_controller_slot(self, reason: str = "released") -> None:
+        global ACTIVE_SESSION
+        was_controller = self.role == "controller"
+        async with ACTIVE_SESSION_LOCK:
+            if ACTIVE_SESSION is self:
+                ACTIVE_SESSION = None
+            SPECTATOR_SESSIONS.discard(self)
+            self.replaced = True
+        if was_controller:
+            with contextlib.suppress(Exception):
+                await self._notify_spectators_controller_left()
+            with contextlib.suppress(Exception):
+                await self.stop_helper(reason)
+        self.stream_started = False
+        self.role = "pending"
+
+    async def force_takeover_controller(self, reason: str = "controller takeover") -> bool:
+        """Evict the current controller so this session can claim control."""
+        async with ACTIVE_SESSION_LOCK:
+            controller = ACTIVE_SESSION
+            if not controller or controller is self:
+                return False
+        await controller.release_controller_slot(reason)
+        with contextlib.suppress(Exception):
+            await controller.websocket.close(code=4001, reason=reason)
+        print(
+            f"[ultra-gateway] controller takeover: replaced stale session "
+            f"(player {PLAYER_ID})",
+            flush=True,
+        )
+        return True
+
     async def attach_as_spectator(self) -> None:
         global ACTIVE_SESSION
         async with ACTIVE_SESSION_LOCK:
@@ -1338,15 +1445,6 @@ class StreamSession:
                             f"{self.active_settings['audioQuality']}Hz"
                         ),
                         "input": f"{self.active_settings['inputMoveHz']}Hz",
-                        **(
-                            {
-                                "webrtc": self.active_settings.get(
-                                    "webrtcLatencyPreset", "low"
-                                )
-                            }
-                            if VIDEO_UDP
-                            else {}
-                        ),
                     },
                 }
             )
@@ -1423,24 +1521,41 @@ class StreamSession:
                     )
                 )
                 return
-        stream_changed = any(
+        video_changed = any(
             prev_active.get(field) != self.active_settings.get(field)
-            for field in STREAM_TRANSPORT_FIELDS
+            for field in VIDEO_TRANSPORT_FIELDS
         )
-        webrtc_preset = self.active_settings.get("webrtcLatencyPreset")
-        webrtc_changed = (
-            VIDEO_UDP
-            and webrtc_preset
-            and prev_active.get("webrtcLatencyPreset") != webrtc_preset
+        audio_changed = any(
+            prev_active.get(field) != self.active_settings.get(field)
+            for field in AUDIO_TRANSPORT_FIELDS
         )
-        should_restart = restart_helper and stream_changed
+        input_changed = (
+            prev_active.get("inputMoveHz") != self.active_settings.get("inputMoveHz")
+        )
+        if input_changed:
+            self.input.set_move_hz(self.active_settings["inputMoveHz"])
+
+        wss_video = self.helper_env.get("ULTRA_WSS_VIDEO", "1") == "1"
+        helper_needs_restart = audio_changed or (video_changed and (not VIDEO_UDP or wss_video))
+        should_restart = restart_helper and helper_needs_restart
         await self._sync_stream_state(restart_helper=should_restart)
         if not self.helper or self.helper.poll() is not None:
             await self.start_helper()
-        if VIDEO_UDP and webrtc_preset:
-            _write_webrtc_runtime_preset(webrtc_preset)
-            if webrtc_changed and self.stream_started:
-                await _restart_webrtc_media("latency_preset")
+        if VIDEO_UDP and video_changed:
+            _write_webrtc_runtime_bitrate(int(self.active_settings["videoBitrate"]))
+            _write_webrtc_runtime_fps(int(self.active_settings["videoFps"]))
+            _write_webrtc_runtime_codec(str(self.active_settings["videoCodec"]))
+            if become_active:
+                reason = "stream_start"
+            elif prev_active.get("videoCodec") != self.active_settings.get("videoCodec"):
+                reason = "video_codec"
+            elif prev_active.get("videoBitrate") != self.active_settings.get("videoBitrate"):
+                reason = "video_bitrate"
+            elif prev_active.get("videoFps") != self.active_settings.get("videoFps"):
+                reason = "video_fps"
+            else:
+                reason = "video_settings"
+            await _restart_webrtc_media(reason)
         self.stream_started = True
         reason = "reconfigure" if not become_active else "start"
         await self._send_ready(reason=reason)
@@ -1575,11 +1690,7 @@ class StreamSession:
                 flush=True,
             )
 
-    async def handle_client_message(self, raw: str) -> None:
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            return
+    async def handle_client_message(self, msg: dict) -> None:
         if msg.get("type") == "ping":
             await self.websocket.send(
                 json.dumps(
@@ -1596,19 +1707,7 @@ class StreamSession:
             async with ACTIVE_SESSION_LOCK:
                 controller = ACTIVE_SESSION
             if controller and controller is not self:
-                await self.websocket.send(
-                    json.dumps(
-                        {
-                            "type": "selectGameResult",
-                            "ok": False,
-                            "game": None,
-                            "error": "Another player is in control. Use Watch stream to view.",
-                            "currentGame": get_current_game_session(),
-                            **session_presence(),
-                        }
-                    )
-                )
-                return
+                await self.force_takeover_controller("superseded by reconnect")
             if not await self.try_claim_controller():
                 await self.websocket.send(
                     json.dumps(
@@ -1660,7 +1759,7 @@ class StreamSession:
         if msg.get("type") == "start":
             if self.role == "spectator":
                 return
-            await self._apply_transport_settings(
+            await self._run_transport_settings(
                 msg,
                 restart_helper=True,
                 become_active=True,
@@ -1669,10 +1768,12 @@ class StreamSession:
         if msg.get("type") == "reconfigure":
             if self.role != "controller" or not self.stream_started:
                 return
-            await self._apply_transport_settings(
-                msg,
-                restart_helper=True,
-                become_active=False,
+            asyncio.create_task(
+                self._run_transport_settings(
+                    msg,
+                    restart_helper=True,
+                    become_active=False,
+                )
             )
             return
         if msg.get("type") == "videoPath":
@@ -1689,20 +1790,6 @@ class StreamSession:
             self.input.release_all_keys()
             await self.stop_helper("client_stop")
             return
-        if msg.get("type") in {
-            "mousemove",
-            "mousedown",
-            "mouseup",
-            "click",
-            "keydown",
-            "keyup",
-            "keyup_all",
-            "wheel",
-        }:
-            if self.role != "controller":
-                return
-            self.input.handle(msg)
-
 
 def process_request(connection, request):
     path = request.path.split("?", 1)[0]
@@ -1747,15 +1834,7 @@ async def webrtc_signal_proxy(client_ws) -> None:
                 asyncio.create_task(forward_client()),
                 asyncio.create_task(forward_upstream()),
             )
-            done, pending = await asyncio.wait(
-                forward_tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            for task in done:
-                with contextlib.suppress(Exception):
-                    await task
+            await asyncio.gather(*forward_tasks)
     except Exception as exc:
         print(f"[ultra-gateway] webrtc-signal proxy failed: {exc}", flush=True)
         with contextlib.suppress(Exception):
@@ -1765,6 +1844,7 @@ async def webrtc_signal_proxy(client_ws) -> None:
 async def stream_handler(websocket) -> None:
     session = StreamSession(websocket)
     print(f"[ultra-gateway] client connected (player {PLAYER_ID})", flush=True)
+    await prune_stale_sessions()
     try:
         await websocket.send(
             json.dumps(
@@ -1786,7 +1866,15 @@ async def stream_handler(websocket) -> None:
             )
         )
         async for raw in websocket:
-            await session.handle_client_message(raw)
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") in INPUT_MESSAGE_TYPES:
+                if session.role == "controller":
+                    session.input.handle(msg)
+                continue
+            await session.handle_client_message(msg)
     finally:
         if session.role == "controller":
             session.input.release_all_keys()
@@ -1825,7 +1913,7 @@ async def watch_display_revision() -> None:
             await controller._send_ready(reason="display_change")
             await controller._sync_spectators_ready(reason="display_change")
         except Exception as exc:
-            print(f"[ultra-gateway] display refresh failed: {exc}", flush=True        )
+            print(f"[ultra-gateway] display refresh failed: {exc}", flush=True)
 
 
 async def gateway_handler(websocket) -> None:

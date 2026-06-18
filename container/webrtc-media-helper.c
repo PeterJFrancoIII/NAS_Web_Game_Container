@@ -111,7 +111,15 @@ static gboolean codec_is_h264(const gchar *codec) {
 }
 
 static gboolean codec_is_h265(const gchar *codec) {
-  return g_ascii_strcasecmp(codec, "H265") == 0 || g_ascii_strcasecmp(codec, "HEVC") == 0;
+  return g_ascii_strcasecmp(codec, "H265") == 0 || g_ascii_strcasecmp(codec, "HEVC") == 0
+      || g_ascii_strcasecmp(codec, "H265_10") == 0 || g_ascii_strcasecmp(codec, "HEVC10") == 0;
+}
+
+static gint webrtc_video_bit_depth(const gchar *codec) {
+  if (g_ascii_strcasecmp(codec, "H265_10") == 0 || g_ascii_strcasecmp(codec, "HEVC10") == 0) {
+    return 10;
+  }
+  return env_int("WEBRTC_VIDEO_BIT_DEPTH", 8);
 }
 
 static gboolean codec_is_vp8(const gchar *codec) {
@@ -169,18 +177,26 @@ static gchar *video_encoder_desc(const gchar **encoding_name) {
   /* H265/HEVC encodes on DS225+ VA-API but Safari did not render video in this
    * WebRTC path during testing. Keep H264 as WEBRTC_LATENCY_PRESET=stable default. */
   if (codec_is_h265(codec)) {
+    gint bit_depth = webrtc_video_bit_depth(codec);
+    const gchar *raw_format = (bit_depth == 10) ? "P010_10LE" : "NV12";
+    const gchar *h265_caps = (bit_depth == 10)
+        ? "video/x-h265,profile=main-10,stream-format=byte-stream,alignment=au"
+        : "video/x-h265,stream-format=byte-stream,alignment=au";
     if (factory_exists("vah265enc")) {
-      g_printerr("[webrtc-helper] using hardware HEVC encoder vah265enc\n");
+      g_printerr("[webrtc-helper] using hardware HEVC encoder vah265enc (%d-bit %s)\n",
+                 bit_depth, raw_format);
       *encoding_name = "H265";
       return g_strdup_printf(
-          "video/x-raw,format=NV12 ! "
+          "video/x-raw,format=%s ! "
           "vah265enc bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 target-usage=7 ! "
-          "video/x-h265,stream-format=byte-stream,alignment=au ! "
-          "h265parse config-interval=-1 ! rtph265pay pt=96 mtu=%d config-interval=-1 "
+          "%s ! h265parse config-interval=-1 ! rtph265pay pt=96 mtu=%d config-interval=-1 "
           "aggregate-mode=zero-latency",
-          bitrate, key_distance, rtp_mtu);
+          raw_format, bitrate, key_distance, h265_caps, rtp_mtu);
     }
     if (factory_exists("vaapih265enc")) {
+      if (bit_depth == 10) {
+        g_printerr("[webrtc-helper] 10-bit HEVC requires vah265enc; vaapih265enc falls back to 8-bit NV12\n");
+      }
       g_printerr("[webrtc-helper] using hardware HEVC encoder vaapih265enc\n");
       *encoding_name = "H265";
       return g_strdup_printf(
@@ -659,6 +675,39 @@ static void configure_ice_port_range(void) {
   g_object_unref(ice);
 }
 
+/*
+ * Give the server its own TURN relay via the *LAN* coturn address.
+ *
+ * The media server is co-located with coturn behind a NAT that does not
+ * hairpin: it cannot reach its own public IP, so it can never send media to a
+ * remote browser's relay candidate (which is advertised on that public IP).
+ * Pointing webrtcbin at turn://<LAN coturn> makes the server relay its outbound
+ * media through coturn over the LAN (no loopback), and coturn bridges the two
+ * allocations internally. The URI is passed straight to the signal (not the
+ * pipeline string), so a '!' in the password is safe here.
+ */
+static void configure_turn_server(void) {
+  const gchar *user = env_str("WEBRTC_TURN_USERNAME", "");
+  const gchar *pass = env_str("WEBRTC_TURN_PASSWORD", "");
+  const gchar *host = env_str("WEBRTC_TURN_RELAY_HOST", "");
+  if (!*host) {
+    host = env_str("NAS_LAN_IP", "");
+  }
+  const gchar *port = env_str("WEBRTC_TURN_RELAY_PORT", "62011");
+  if (!*user || !*pass || !*host) {
+    g_printerr("[webrtc-helper] server-side TURN disabled "
+               "(needs WEBRTC_TURN_USERNAME/PASSWORD + NAS_LAN_IP)\n");
+    return;
+  }
+  gchar *uri = g_strdup_printf("turn://%s:%s@%s:%s", user, pass, host, port);
+  gboolean added = FALSE;
+  g_signal_emit_by_name(webrtc, "add-turn-server", uri, &added);
+  g_printerr("[webrtc-helper] server-side TURN relay %s via %s:%s "
+             "(LAN egress, bypasses NAT hairpin)\n",
+             added ? "added" : "REJECTED", host, port);
+  g_free(uri);
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IOLBF, 0);
   gst_init(&argc, &argv);
@@ -679,6 +728,7 @@ int main(int argc, char **argv) {
 
   webrtc = gst_bin_get_by_name(GST_BIN(pipeline), "sendrecv");
   configure_ice_port_range();
+  configure_turn_server();
   g_signal_connect(webrtc, "notify::ice-connection-state", G_CALLBACK(on_ice_connection_state_notify),
                    NULL);
   g_signal_connect(webrtc, "notify::connection-state", G_CALLBACK(on_peer_connection_state_notify),
